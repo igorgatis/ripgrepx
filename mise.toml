@@ -6,13 +6,24 @@ fd = "latest"
 [env]
 RUST_BACKTRACE = "1"
 
-[tasks.build]
-description = "Compile the project"
-run = "cargo build"
+[tasks.clean]
+description = "Remove build artifacts and all untracked/ignored files"
+run = [
+  "cargo clean",
+  "git clean -f -x -d",
+]
 
-[tasks."build:release"]
-description = "Compile the project (optimized release)"
-run = "cargo build --release"
+[tasks."build:install"]
+description = "Build release and install rgx to ~/.local/bin"
+run = '''
+cargo build --release
+mkdir -p "$HOME/.local/bin"
+install ./target/release/rgx "$HOME/.local/bin/rgx"
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) echo "warning: $HOME/.local/bin is not in PATH" >&2 ;;
+esac
+'''
 
 [tasks.run]
 description = "Run rgx (pass args after --)"
