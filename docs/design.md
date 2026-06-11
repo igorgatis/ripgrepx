@@ -73,8 +73,9 @@ in a project `.toml` the user edits directly — there is no config-editing CLI.
   options (globs, type filters, dirs-only), `rgx --find config --type d --glob '*.rs'` is simplest
   but lets file-search flags share rg's namespace. If that proves cramped, `--find` can follow the
   `--server` precedent and become a gate with its own subcommand grammar.
-- **Rust-native key/value store.** The persistent index needs an embedded store; rebuilding from
-  the ground up is the chance to evaluate a couple of rust-native options. (Storage choice is an
-  implementation detail and does not affect the model or guarantees above.)
 - **Headline command list.** Whether `--skill` and the `--server` subcommands belong in the primary
   help output or stay secondary.
+
+(Storage is settled — an in-RAM trigram index with a versioned on-disk snapshot; see
+[`index-and-storage.md`](index-and-storage.md). It's an implementation detail that doesn't affect the
+model or guarantees above.)

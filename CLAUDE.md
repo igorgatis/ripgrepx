@@ -10,8 +10,8 @@ ripgrep does the matching. Correctness is ripgrep's, speed is ours.
 - [`docs/cli.md`](docs/cli.md) — command surface and the `--server` gate.
 - [`docs/mcp.md`](docs/mcp.md) — agent-facing MCP tools.
 - [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.
-- [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage engine,
-  benchmark results, and hypotheses to verify.
+- [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage, and
+  benchmark results.
 
 ## Commands
 

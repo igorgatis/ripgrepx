@@ -96,7 +96,7 @@ state (e.g. linux `spin_lock_irqsave`: rg 2056 ± 698 ms vs rgx 55.6 ± 0.7 ms).
 - [`docs/mcp.md`](docs/mcp.md) — the agent-facing MCP tools.
 - [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.
 - [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage engine
-  choice, benchmark results vs `rg`, and open hypotheses.
+  choice, and benchmark results vs `rg`.
 
 ## License
 

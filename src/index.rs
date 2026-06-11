@@ -7,7 +7,7 @@
 //! file changes we add its *current* trigrams (so no new-trigram query can miss it); trigrams that
 //! the file no longer contains linger in their posting lists, which only ever produces an extra
 //! candidate that ripgrep then filters out. Deleted files are tombstoned (`live = false`) so they
-//! stop being candidates. See `docs/index-and-storage.md` sections 3.3 and 4.
+//! stop being candidates. See `docs/index-and-storage.md` sections 3.1 and 5.
 
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -31,7 +31,7 @@ const SNAPSHOT_MAGIC: &[u8; 8] = b"RGXIDX01";
 /// Bytes from the start of a file scanned for a NUL to decide "binary from the start". Conservative:
 /// if a NUL is in here, ripgrep also treats the file as binary and prints nothing for it in a
 /// recursive search, so giving it no postings is sound. Deeper NULs are handled by the confirm
-/// step. See `docs/index-and-storage.md` section 3.3 (H-1).
+/// step. See `docs/index-and-storage.md` section 3.1.
 const BINARY_SNIFF_BYTES: usize = 1024;
 
 /// A file known to the index. `live` is false once the file is deleted (tombstoned).

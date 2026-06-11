@@ -1,8 +1,8 @@
 # Indexing
 
-> For the concrete index data structure, storage-engine choice, benchmark results, and the open
-> hypotheses behind them, see [`index-and-storage.md`](index-and-storage.md). This page describes the
-> freshness contract; that one describes the mechanism.
+> For the concrete index data structure, storage, and benchmark results, see
+> [`index-and-storage.md`](index-and-storage.md). This page describes the freshness contract; that one
+> describes the mechanism.
 
 The index exists for one purpose: to answer **"which files could contain a match for this
 pattern?"** quickly, so ripgrep scans a small candidate set instead of the whole tree. It never
