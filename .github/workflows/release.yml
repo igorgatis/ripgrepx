@@ -43,7 +43,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       # Builds with --release, archives the `rgx` binary (.tar.gz on unix, .zip on windows),
       # installs the target / uses cross for non-native ones, and uploads to the tag's release.
       - uses: taiki-e/upload-rust-binary-action@v1
