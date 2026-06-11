@@ -15,7 +15,7 @@ HF="${HF:-hyperfine}"
 RUNS="${RUNS:-5}"
 TOLERANCE="${TOLERANCE:-1.10}"   # allow rgx to be up to 10% slower before calling it a regression
 
-echo "repo=$REPO"
+echo "repo=$REPO  vs  $("$RG" --version | head -1)"
 # Warm the daemon and wait until the index is ready.
 "$RGX" "warmup_token_$$" "$REPO" >/dev/null 2>&1
 for _ in $(seq 1 60); do

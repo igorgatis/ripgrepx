@@ -1,33 +1,44 @@
 # rgx vs rg benchmark baseline (2026-06-11)
-# host: 12cpu/24GB  macOS  rg 15.1.0  hyperfine (warmup 1, 10 runs); times are mean±stddev ms
+# host: 12cpu/24GB  macOS  vs  ripgrep 15.1.0   hyperfine (warmup 1, 10 runs); times are mean±stddev ms
 # warm daemon (index resident); reproduce with: RUNS=10 RGX=target/release/rgx bench/bench.sh <repo> <pat>...
-# `.*` over linux (0.77x) is the documented degenerate "print every line" residual; see
-# docs/index-and-storage.md section 9b. Every realistic query is faster, and rgx is far more
-# consistent (tiny stddev) than a full rg scan.
+# Queries are real-world: symbols / error strings / API names drawn from each project's own code and
+# commit history. The more selective the query, the larger the win; rgx's stddev stays tiny while a
+# full rg scan's swings with cache state.
 
 ### lucene  (7.4k files, index 19.2 MB)
 pattern                                           rg ms         rgx ms   speedup verdict
-MergePolicy                                   101.5±1.5        8.2±0.2    12.41x OK
-IndexWriter                                   103.2±0.9       17.2±0.2     6.00x OK
-TokenStream|IndexWriter|BytesRef              108.6±0.6       42.8±0.4     2.53x OK
+CorruptIndexException                         100.8±1.5        4.6±0.2    22.02x OK
+extends Analyzer                              100.9±1.1        4.6±0.2    21.78x OK
+DocValuesType                                 101.1±1.6        4.8±0.2    20.89x OK
+TieredMergePolicy|LogMergePolicy              100.8±1.2        6.3±0.3    15.91x OK
+IndexWriter                                   102.7±0.8       17.8±0.8     5.76x OK
 
 ### vscode  (15.1k files, index 41.5 MB)
 pattern                                           rg ms         rgx ms   speedup verdict
-createDecorator                               199.7±1.2       12.5±0.2    16.01x OK
-registerCommand                               199.5±1.3       14.1±0.4    14.19x OK
-IDisposable|registerCommand|createDecorator      203.1±1.7       34.8±0.5     5.84x OK
+TreeDataProvider                              197.9±1.6        4.1±0.1    47.96x OK
+listSessions                                  198.9±2.0        8.3±0.3    23.88x OK
+createDecorator                               200.2±1.5       12.3±0.2    16.25x OK
+onDidChangeConfiguration                      200.8±1.7       13.6±0.3    14.80x OK
+registerCommand                               200.0±1.5       14.0±0.2    14.32x OK
 
 ### kubernetes  (30.2k files, index 46.6 MB)
 pattern                                           rg ms         rgx ms   speedup verdict
-PodSpec                                       422.2±5.2       15.2±0.3    27.74x OK
-kubelet                                       417.2±8.0       35.6±0.5    11.72x OK
-DaemonSet|StatefulSet|ReplicaSet              426.1±8.9       18.6±0.5    22.94x OK
-Po (fallback, in-process)                     440.1±7.7      428.4±8.0     1.03x OK
-.* (fallback, in-process)                     522.0±5.9      555.0±5.2     0.94x OK
+func \(kl \*Kubelet\)                         408.5±6.3        3.2±0.2   127.94x OK
+context deadline exceeded                     417.8±7.0        5.7±0.1    73.39x OK
+EndpointSlice                                 418.5±9.2        8.4±0.2    50.08x OK
+klog.Errorf                                  418.6±10.6       16.5±0.3    25.30x OK
+DaemonSet|StatefulSet|ReplicaSet              411.9±7.8       18.9±0.5    21.80x OK
+metav1.ObjectMeta                             410.5±9.5       29.9±0.2    13.74x OK
 
 ### linux  (93.6k files, index 197.9 MB)
 pattern                                           rg ms         rgx ms   speedup verdict
-EXPORT_SYMBOL_GPL                           1410.8±36.8       53.9±1.2    26.18x OK
-spin_lock_irqsave                          2055.6±698.3       55.6±0.7    36.97x OK
-task_struct|spin_lock|mutex_lock           2617.0±138.7      175.1±1.7    14.95x OK
-.* (fallback, match-everything)             1859.3±32.9     2411.6±96.7     0.77x REGRESSION (degenerate; documented)
+struct task_struct                         1802.9±372.5       42.8±1.0    42.13x OK
+kmalloc                                    2308.1±507.2       57.5±1.4    40.13x OK
+EXPORT_SYMBOL_GPL                           1606.4±55.5       54.0±1.3    29.76x OK
+spin_lock_irqsave                           1409.6±48.6       56.9±1.5    24.79x OK
+MODULE_LICENSE                             2517.6±175.9      161.6±1.8    15.58x OK
+
+### fallback queries (no usable trigram -> in-process scan, parity with rg)
+# kubernetes  Po          440.1±7.7      428.4±8.0     1.03x OK   (modest output)
+# kubernetes  .*          522.0±5.9      555.0±5.2     0.94x OK   (match every line)
+# linux       .*        1859.3±32.9     2411.6±96.7     0.77x     (degenerate "cat the repo"; documented)

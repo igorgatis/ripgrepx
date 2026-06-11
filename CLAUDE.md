@@ -12,6 +12,7 @@ ripgrep does the matching. Correctness is ripgrep's, speed is ours.
 - [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.
 - [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage, and
   benchmark results.
+- [`docs/profiling.md`](docs/profiling.md) — profiling the build/query paths (criterion, samply, dhat).
 
 ## Commands
 

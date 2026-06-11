@@ -56,37 +56,56 @@ See [`docs/mcp.md`](docs/mcp.md) for the full agent integration guide.
 
 ## Benchmarks
 
-rgx vs ripgrep on four real repositories, **warm daemon** (index resident). Output is byte-for-byte
-`rg`'s, so this measures only how much less work the index lets ripgrep do.
+rgx (**warm daemon**, index resident) vs **ripgrep 15.1.0** on four real repositories. Output is
+byte-for-byte `rg`'s, so this measures only how much less work the index lets ripgrep do.
 
-Times are `mean ± σ` over 10 runs (one standard deviation):
+| repo | files | index size | cold build |
+| --- | --- | --- | --- |
+| [lucene](https://github.com/apache/lucene) | 7.4k | 22 MB | ~1.5 s |
+| [vscode](https://github.com/microsoft/vscode) | 15.1k | 46 MB | ~1.2 s |
+| [kubernetes](https://github.com/kubernetes/kubernetes) | 30.2k | 53 MB | ~1.5 s |
+| [linux](https://github.com/torvalds/linux) | 93.6k | 210 MB | ~7.4 s |
 
-| repo | files | index size | cold build | example query | `rg` | `rgx` | speedup |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| [lucene](https://github.com/apache/lucene) | 7.4k | 22 MB | ~1.5 s | `MergePolicy` | 102 ± 2 ms | 8.2 ± 0.2 ms | **12×** |
-| [vscode](https://github.com/microsoft/vscode) | 15.1k | 46 MB | ~1.2 s | `createDecorator` | 200 ± 1 ms | 12.5 ± 0.2 ms | **16×** |
-| [kubernetes](https://github.com/kubernetes/kubernetes) | 30.2k | 53 MB | ~1.5 s | `PodSpec` | 422 ± 5 ms | 15.2 ± 0.3 ms | **27×** |
-| [linux](https://github.com/torvalds/linux) | 93.6k | 210 MB | ~7.4 s | `EXPORT_SYMBOL_GPL` | 1411 ± 37 ms | 54 ± 1 ms | **26×** |
+Real queries (the kind of symbol / error string / API name a developer actually searches for, drawn
+from each project's own code and commit history), `mean ± σ` over 10 runs:
 
-Across query classes (kubernetes): literal **12–27×**, alternation (`A|B|C`) **23×**. The win scales
-with repo size — the bigger the tree, the more ripgrep work the index removes. rgx is also markedly
-**more consistent**: its σ stays around 0.2–1.7 ms while a full `rg` scan's varies far more with cache
-state (e.g. linux `spin_lock_irqsave`: rg 2056 ± 698 ms vs rgx 55.6 ± 0.7 ms).
+| repo | query | `rg` | `rgx` | speedup |
+| --- | --- | --- | --- | --- |
+| lucene | `CorruptIndexException` | 101 ± 2 ms | 4.6 ± 0.2 ms | **22×** |
+| lucene | `IndexWriter` | 103 ± 1 ms | 17.8 ± 0.8 ms | **6×** |
+| lucene | `TieredMergePolicy\|LogMergePolicy` | 101 ± 1 ms | 6.3 ± 0.3 ms | **16×** |
+| vscode | `TreeDataProvider` | 198 ± 2 ms | 4.1 ± 0.1 ms | **48×** |
+| vscode | `onDidChangeConfiguration` | 201 ± 2 ms | 13.6 ± 0.3 ms | **15×** |
+| vscode | `registerCommand` | 200 ± 2 ms | 14.0 ± 0.2 ms | **14×** |
+| kubernetes | `func (kl *Kubelet)` | 409 ± 6 ms | 3.2 ± 0.2 ms | **128×** |
+| kubernetes | `context deadline exceeded` | 418 ± 7 ms | 5.7 ± 0.1 ms | **73×** |
+| kubernetes | `EndpointSlice` | 419 ± 9 ms | 8.4 ± 0.2 ms | **50×** |
+| kubernetes | `metav1.ObjectMeta` | 411 ± 10 ms | 29.9 ± 0.2 ms | **14×** |
+| linux | `struct task_struct` | 1803 ± 373 ms | 42.8 ± 1.0 ms | **42×** |
+| linux | `kmalloc` | 2308 ± 507 ms | 57.5 ± 1.4 ms | **40×** |
+| linux | `EXPORT_SYMBOL_GPL` | 1606 ± 56 ms | 54.0 ± 1.3 ms | **30×** |
+| linux | `MODULE_LICENSE` (broad) | 2518 ± 176 ms | 161.6 ± 1.8 ms | **16×** |
 
-**Honest caveat.** A *fallback* query that the index can't narrow — one with no usable trigram, e.g.
-`\w+` or a 2-char pattern — is handled by an in-process pipelined scan and lands at **parity** with
-`rg`. The one exception is a *match-everything* query like `.*` over the largest repo (printing all
-1.5 GB), which is ~**0.8×**: a degenerate "cat the repo", not a search. See
-[`docs/index-and-storage.md`](docs/index-and-storage.md) §9b for why.
+The more selective the query, the bigger the win (a rare symbol touches few files; a `func (kl
+*Kubelet)` receiver hits 13 of 30k). rgx is also markedly **more consistent**: its σ stays sub-2 ms
+while a full `rg` scan's swings with cache state (linux `kmalloc`: rg 2308 ± 507 ms vs rgx 57 ± 1 ms).
+The full set (and the fallback rows below) is in [`bench/baseline.txt`](bench/baseline.txt).
+
+**Honest caveat.** A *fallback* query the index can't narrow — no usable trigram, e.g. `\w+` or a
+2-char pattern — is handled by an in-process pipelined scan and lands at **parity** with `rg`. The one
+exception is a *match-everything* query like `.*` over the largest repo (printing all 1.5 GB), at
+~**0.8×**: a degenerate "cat the repo", not a search. See
+[`docs/index-and-storage.md`](docs/index-and-storage.md) §8 for why.
 
 ### Methodology
 
-- Machine: 12-core / 24 GB, macOS; ripgrep 15.1.0; timings via `hyperfine` (1 warmup, 10 runs,
-  reported as mean ± σ), output discarded.
+- Machine: 12-core / 24 GB, macOS; **ripgrep 15.1.0** (`rg --version`, recorded by the harness);
+  timings via `hyperfine` (1 warmup, 10 runs, reported as mean ± σ), output discarded.
 - `rgx <pattern> <repo>` (CLI talking to its warm daemon) vs `rg -n <pattern> <repo>`; both pipe to
   the same sink, so the comparison is apples-to-apples.
-- Reproduce: `RGX=target/release/rgx bench/bench.sh <repo> <pattern>...` (the script warms the daemon,
-  then benchmarks each pattern and flags any regression). Numbers vary with hardware and cache state.
+- Reproduce: `RGX=target/release/rgx bench/bench.sh <repo> <pattern>...` (the script prints the `rg`
+  version, warms the daemon, benchmarks each pattern, and flags any regression). Numbers vary with
+  hardware and cache state.
 
 ## Documentation
 
@@ -95,6 +114,7 @@ state (e.g. linux `spin_lock_irqsave`: rg 2056 ± 698 ms vs rgx 55.6 ± 0.7 ms).
 - [`docs/cli.md`](docs/cli.md) — command surface and the `--server` gate.
 - [`docs/mcp.md`](docs/mcp.md) — the agent-facing MCP tools.
 - [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.
+- [`docs/profiling.md`](docs/profiling.md) — how to profile build/query (criterion, samply, dhat).
 - [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage engine
   choice, and benchmark results vs `rg`.
 

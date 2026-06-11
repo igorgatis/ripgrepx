@@ -12,7 +12,16 @@ use rgx::paths::resolve_root;
 use rgx::proto::Request;
 use rgx::{client, mcp, server};
 
+// Heap profiling (cargo run --release --features dhat-heap ...): captures allocations for the whole
+// run (e.g. run the daemon foreground over a repo to profile a cold build), writes dhat-heap.json.
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> ExitCode {
+    #[cfg(feature = "dhat-heap")]
+    let _dhat = dhat::Profiler::new_heap();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => {
