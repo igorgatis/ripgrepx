@@ -17,16 +17,24 @@ description: >-
 
 ```sh
 rgx <pattern> [path]        # e.g. rgx 'fn \w+_total' src/
-rgx -i needle               # case-insensitive
+rgx -i needle               # case-insensitive (-s forces case-sensitive)
 rgx -w word                 # whole-word
 rgx -F 'literal.string'     # fixed string (no regex)
-rgx -C 3 pattern            # 3 lines of context (also -A / -B)
+rgx -U 'a(?s:.)*b'          # multiline match
+rgx -C 3 pattern            # 3 lines of context (also -A <n> / -B <n>)
 ```
 
 - Output is exactly `rg`'s `path:line:text`. Anything you'd write as `rg <pattern>` works as
-  `rgx <pattern>`.
+  `rgx <pattern>`. Supported flags: `-i` `-s` `-w` `-F` `-U` `-A<n>` `-B<n>` `-C<n>` `--`.
 - Patterns the index can't accelerate (e.g. `.`, `\w+`, very short patterns) transparently fall back
   to a full scan — still correct, just not faster.
+- To search for text that looks like a flag, use ripgrep's escapes: `rgx -e --foo` or
+  `rgx -- --foo` (everything after `--` is the pattern/path).
+
+**Flag ordering (important):** rgx's own modes — `--compact`, `--find`, `--server`, `--skill` (and
+`--page`) — are recognized **only as the first token**. Put them right after `rgx`: `rgx --compact
+'fn ' src/` works, but `rgx 'fn ' --compact` is treated as a plain search and errors. All the search
+flags above can follow in any position, like `rg`.
 
 ## Token-savings view (prefer this for broad searches)
 
@@ -42,7 +50,8 @@ rgx --compact --page 2 <pattern>     # next page (also -p 2)
   page** (the footer prints the exact command) instead of widening into one giant search.
 - Nothing is dropped: the match set is identical to `rg`; every match is reachable by paging. Only
   very long lines are trimmed around the match (`…`) — open the file if you need the full line.
-- Over MCP this is the default for `content_search`; pass `page` to advance.
+- The header is `[page X/Y · N matches in M files]`; when more remain, a footer prints the exact
+  next command (`next: rgx --compact --page 2 '<pattern>' <path>`).
 
 ## File / directory lookup (find/fd-style)
 
@@ -60,6 +69,19 @@ rgx --server status     # whether the index is ready, file/trigram counts, last 
 
 The background indexer starts on first use and keeps itself fresh as files change; you do not need
 to start or manage it manually.
+
+## Over MCP
+
+If `rgx` is wired as an MCP server (`rgx --server mcp`), the same search is exposed as three tools:
+
+- **`content_search`** — args: `pattern` (required), plus optional `case_insensitive`, `word`,
+  `fixed_strings`, `multi_line`, and `page` (1-based). It returns the **compact view by default**
+  (this is `--compact` — there is no raw mode over MCP): a `[page X/Y · N matches in M files]`
+  header, matches grouped by file (path once, then `  line: text`), and a `(more: call
+  content_search with page: 2)` line when further pages exist. Pass `page` to advance — paging is
+  cheap, so prefer it over a broad dump.
+- **`file_search`** — arg: `query` (name/path substring). Returns one path per line.
+- **`status`** — no args. Reports index readiness and file/trigram counts.
 
 ## Notes for agents
 
