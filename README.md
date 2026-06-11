@@ -28,6 +28,32 @@ rgx --server status      # index health, and whether an update is in flight
 A bare `rgx <pattern>` is always a plain (accelerated) ripgrep search; the `--server` gate holds the
 daemon commands. See [`docs/cli.md`](docs/cli.md) for the full surface.
 
+### Where state lives
+
+The index and daemon socket are kept outside the repo, under a per-project cache dir keyed by the
+canonical root — rgx never writes into the tree it indexes. The location resolves as:
+
+- `$RGX_CACHE_DIR/<hash>/` if set — relocates **only** rgx's state;
+- else `$XDG_CACHE_HOME/rgx/<hash>/` (note: `$XDG_CACHE_HOME` is shared by other tools);
+- else `~/.cache/rgx/<hash>/`.
+
+The contents are a rebuildable cache — safe to delete; rgx re-indexes on the next run.
+
+### Token-savings view (`--compact`)
+
+For agents (or anyone) who want a denser result, `rgx --compact <pattern>` groups matches by file
+(the path is printed once), pages the output, and trims very long lines around the match:
+
+```sh
+rgx --compact 'fn .*Handler'     # grouped + paged; footer shows the next-page command
+rgx --compact --page 2 'fn .*Handler'
+```
+
+This is the one surface that is not byte-for-byte `rg`, and the trade is narrow: the match set is
+still exactly ripgrep's — nothing is added or silently dropped. Pagination is the only volume
+control, and because the index is warm, fetching the next page is cheap, so every match stays
+reachable. Over MCP this is how `content_search` returns results (pass `page` to advance).
+
 ## Use with AI agents (MCP)
 
 `rgx` is self-contained — ripgrep's engine is linked in, so **you do not need `rg` installed**.
@@ -44,9 +70,10 @@ or add it to any MCP client config:
 { "rgx": { "command": "rgx", "args": ["--server", "mcp"] } }
 ```
 
-The MCP server exposes `content_search`, `file_search`, and `status` tools, returning the same
-`path:line:text` shape as the CLI. To also teach an agent to *prefer* `rgx` over `rg`/`grep`/`find`/`fd`,
-install the bundled skill:
+The MCP server exposes `content_search`, `file_search`, and `status` tools. `content_search` returns
+the token-savings view (grouped by file, paged — pass `page` to advance), with a match set identical
+to `rg`. To also teach an agent to *prefer* `rgx` over `rg`/`grep`/`find`/`fd`, install the bundled
+skill:
 
 ```sh
 rgx --skill        # installs ~/.claude/skills/rgx/SKILL.md and prints MCP setup
