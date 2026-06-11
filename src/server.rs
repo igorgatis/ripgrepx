@@ -1,11 +1,10 @@
-//! The per-project daemon: holds the index resident in RAM, keeps it fresh, and answers queries
-//! over a Unix socket. Binding the socket *is* the single-instance lock — a second daemon that
+//! The per-project daemon: holds the index resident in RAM, keeps it fresh, and answers queries over
+//! a local IPC endpoint (an AF_UNIX socket on Unix, a loopback-TCP port on Windows — see
+//! [`crate::transport`]). Owning that endpoint *is* the single-instance lock — a second daemon that
 //! loses the race exits. The daemon serves immediately: a warm start loads the snapshot and answers
 //! at once; a cold start answers via a full ripgrep scan (the correct fallback) until the first
 //! build finishes. See `docs/indexing.md` and `docs/index-and-storage.md`.
 
-use std::io::ErrorKind;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -19,6 +18,7 @@ use crate::confirm::SearchOptions;
 use crate::index::{self, Index};
 use crate::paths;
 use crate::proto::{self, Request};
+use crate::transport::{self, Stream};
 
 /// How often a `watch` subscriber repaints when nothing changed (keeps the build-progress count and
 /// the snapshot age fresh, and detects client disconnect).
@@ -75,8 +75,7 @@ impl Shared {
 pub fn run(root: PathBuf) -> Result<()> {
     let dir = paths::state_dir(&root);
     std::fs::create_dir_all(&dir)?;
-    let sock = paths::socket_path(&root);
-    let listener = match bind(&sock)? {
+    let listener = match transport::bind(&root)? {
         Some(l) => l,
         None => return Ok(()), // another daemon owns this root
     };
@@ -96,15 +95,16 @@ pub fn run(root: PathBuf) -> Result<()> {
     spawn_indexer(shared.clone());
     spawn_watcher(shared.clone());
 
-    for conn in listener.incoming() {
-        let Ok(conn) = conn else { continue };
+    loop {
+        let conn = match transport::accept(&listener) {
+            Ok(conn) => conn,
+            Err(_) => continue,
+        };
         let shared = shared.clone();
-        let sock = sock.clone();
         std::thread::spawn(move || {
-            let _ = handle(conn, &shared, &sock);
+            let _ = handle(conn, &shared);
         });
     }
-    Ok(())
 }
 
 /// Warm-start from the snapshot if present (serve immediately), then build/reconcile in the
@@ -166,7 +166,7 @@ fn spawn_watcher(shared: Arc<Shared>) {
     });
 }
 
-fn handle(mut conn: UnixStream, shared: &Shared, sock: &Path) -> Result<()> {
+fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
     let req = proto::read_request(&mut conn)?;
     match req {
         // Errors here are essentially "client went away mid-stream"; ignore so we still attempt the
@@ -185,7 +185,7 @@ fn handle(mut conn: UnixStream, shared: &Shared, sock: &Path) -> Result<()> {
         Request::Shutdown => {
             let _ = proto::write_data(&mut conn, b"ok\n");
             let _ = proto::end_stream(&mut conn);
-            let _ = std::fs::remove_file(sock);
+            transport::cleanup(&shared.root);
             std::process::exit(0);
         }
     }
@@ -196,7 +196,7 @@ fn handle(mut conn: UnixStream, shared: &Shared, sock: &Path) -> Result<()> {
 /// Stream a fresh status frame on every change (and on a heartbeat), until the client disconnects.
 /// The blocking wait holds no index lock, and rendering only touches the (cheap-while-building)
 /// resident index, so an attached watcher does not slow indexing.
-fn watch(shared: &Shared, conn: &mut UnixStream) -> Result<()> {
+fn watch(shared: &Shared, conn: &mut Stream) -> Result<()> {
     let mut last = 0;
     loop {
         if proto::write_data(conn, &status(shared)).is_err() {
@@ -211,7 +211,7 @@ fn content_search(
     shared: &Shared,
     pattern: &str,
     opts: SearchOptions,
-    conn: &mut UnixStream,
+    conn: &mut Stream,
 ) -> Result<()> {
     if shared.ready.load(Ordering::SeqCst) {
         // Resolve candidates while holding the read lock, then RELEASE it before streaming: ripgrep
@@ -282,21 +282,4 @@ fn status(shared: &Shared) -> Vec<u8> {
     }
     .render()
     .into_bytes()
-}
-
-/// Bind the socket, taking ownership of this root. `Ok(None)` means a live daemon already owns it;
-/// a stale socket file (no listener) is removed and rebound.
-fn bind(sock: &Path) -> Result<Option<UnixListener>> {
-    match UnixListener::bind(sock) {
-        Ok(l) => Ok(Some(l)),
-        Err(e) if e.kind() == ErrorKind::AddrInUse => {
-            if UnixStream::connect(sock).is_ok() {
-                Ok(None)
-            } else {
-                std::fs::remove_file(sock).ok();
-                Ok(Some(UnixListener::bind(sock)?))
-            }
-        }
-        Err(e) => Err(e.into()),
-    }
 }

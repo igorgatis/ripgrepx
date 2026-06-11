@@ -1,22 +1,18 @@
 //! Client side: connect to the project's daemon, spawning it on first use.
 
-use std::io::ErrorKind;
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use crate::paths;
 use crate::proto::{self, Request};
+use crate::transport::{self, Stream};
 
 /// Send one request to the daemon for `root` (spawning it if needed), streaming the response to
 /// `sink`. Returns the total number of bytes written.
 pub fn request_stream(root: &Path, req: &Request, sink: &mut impl std::io::Write) -> Result<usize> {
-    let sock = paths::socket_path(root);
-    let mut stream = connect_or_spawn(root, &sock)?;
+    let mut stream = connect_or_spawn(root)?;
     proto::write_request(&mut stream, req)?;
     proto::read_stream(&mut stream, sink)
 }
@@ -30,24 +26,19 @@ pub fn request(root: &Path, req: &Request) -> Result<Vec<u8>> {
 
 /// Like [`request`] but never spawns — returns `None` if no daemon is listening. For `stop`/`status`.
 pub fn request_existing(root: &Path, req: &Request) -> Result<Option<Vec<u8>>> {
-    let sock = paths::socket_path(root);
-    match UnixStream::connect(&sock) {
-        Ok(mut stream) => {
+    match transport::connect(root)? {
+        Some(mut stream) => {
             proto::write_request(&mut stream, req)?;
             Ok(Some(proto::read_stream_to_vec(&mut stream)?))
         }
-        Err(e) if e.kind() == ErrorKind::NotFound || e.kind() == ErrorKind::ConnectionRefused => {
-            Ok(None)
-        }
-        Err(e) => Err(e.into()),
+        None => Ok(None),
     }
 }
 
 /// Subscribe to the daemon's live status (spawning it if needed), invoking `render` with each status
 /// frame as it arrives, until the daemon closes the stream (or the process is interrupted).
 pub fn watch(root: &Path, mut render: impl FnMut(&[u8])) -> Result<()> {
-    let sock = paths::socket_path(root);
-    let mut stream = connect_or_spawn(root, &sock)?;
+    let mut stream = connect_or_spawn(root)?;
     proto::write_request(&mut stream, &Request::Watch)?;
     while let Some(frame) = proto::read_watch_frame(&mut stream)? {
         render(&frame);
@@ -55,14 +46,14 @@ pub fn watch(root: &Path, mut render: impl FnMut(&[u8])) -> Result<()> {
     Ok(())
 }
 
-fn connect_or_spawn(root: &Path, sock: &Path) -> Result<UnixStream> {
-    if let Ok(s) = UnixStream::connect(sock) {
+fn connect_or_spawn(root: &Path) -> Result<Stream> {
+    if let Some(s) = transport::connect(root)? {
         return Ok(s);
     }
     spawn_daemon(root)?;
     for _ in 0..400 {
         std::thread::sleep(Duration::from_millis(25));
-        if let Ok(s) = UnixStream::connect(sock) {
+        if let Some(s) = transport::connect(root)? {
             return Ok(s);
         }
     }
@@ -72,13 +63,27 @@ fn connect_or_spawn(root: &Path, sock: &Path) -> Result<UnixStream> {
 /// Spawn a detached background daemon (`rgx --server`) rooted at `root`.
 pub fn spawn_daemon(root: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
-    Command::new(exe)
-        .arg("--server")
+    let mut cmd = Command::new(exe);
+    cmd.arg("--server")
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()?;
+        .stderr(Stdio::null());
+    detach(&mut cmd);
+    cmd.spawn()?;
     Ok(())
+}
+
+/// Put the daemon in its own process group so it outlives this client.
+#[cfg(unix)]
+fn detach(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(windows)]
+fn detach(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+    cmd.creation_flags(0x0000_0008 | 0x0000_0200 | 0x0800_0000);
 }

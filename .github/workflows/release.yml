@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # Builds with --release, archives the `rgx` binary (.tar.gz on unix, .zip on windows),
+      # installs the target / uses cross for non-native ones, and uploads to the tag's release.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: rgx
+          target: ${{ matrix.target }}
+          archive: rgx-$tag-$target
+          token: ${{ secrets.GITHUB_TOKEN }}

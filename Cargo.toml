@@ -26,6 +26,8 @@ dhat = { version = "0.3", optional = true }
 [features]
 # Heap-profile a run: `cargo run --release --features dhat-heap -- --server` (writes dhat-heap.json).
 dhat-heap = ["dep:dhat"]
+# Force the Windows-style loopback-TCP daemon transport on any platform (so it can be tested on Unix).
+tcp-transport = []
 
 [dev-dependencies]
 regex = "1"
@@ -42,6 +44,11 @@ path = "src/main.rs"
 [[bench]]
 name = "index_bench"
 harness = false
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
 
 # Optimized build that keeps line tables, for samply / Instruments: `cargo build --profile profiling`.
 [profile.profiling]

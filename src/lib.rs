@@ -25,6 +25,7 @@ pub mod query;
 pub mod server;
 pub mod skill;
 pub mod status;
+pub mod transport;
 pub mod trigram;
 
 use confirm::SearchOptions;

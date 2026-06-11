@@ -22,12 +22,21 @@ pub fn state_dir(root: &Path) -> PathBuf {
     let mut h = DefaultHasher::new();
     root.hash(&mut h);
     let hash = format!("{:016x}", h.finish());
-    let base = cache_base(
-        std::env::var_os("RGX_CACHE_DIR"),
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
-    );
+    // Windows has no XDG/HOME convention, so fall back to the standard per-user cache roots there.
+    let xdg = std::env::var_os("XDG_CACHE_HOME").or_else(win_var("LOCALAPPDATA"));
+    let home = std::env::var_os("HOME").or_else(win_var("USERPROFILE"));
+    let base = cache_base(std::env::var_os("RGX_CACHE_DIR"), xdg, home);
     base.join(hash)
+}
+
+#[cfg(windows)]
+fn win_var(name: &'static str) -> impl FnOnce() -> Option<std::ffi::OsString> {
+    move || std::env::var_os(name)
+}
+
+#[cfg(not(windows))]
+fn win_var(_name: &'static str) -> impl FnOnce() -> Option<std::ffi::OsString> {
+    || None
 }
 
 fn cache_base(
@@ -43,10 +52,6 @@ fn cache_base(
         .or_else(|| home.map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir)
         .join("rgx")
-}
-
-pub fn socket_path(root: &Path) -> PathBuf {
-    state_dir(root).join("daemon.sock")
 }
 
 pub fn snapshot_path(root: &Path) -> PathBuf {

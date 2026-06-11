@@ -16,7 +16,7 @@ installed.
 ### Install
 
 ```sh
-# 1. Get the binary
+# 1. Get the binary  (a single, self-contained ~4 MB file -- ripgrep linked in, no deps)
 #    - download from GitHub releases:  https://github.com/igorgatis/rgx/releases   (TODO)
 #    - or via npm:  npm install -g rgx                                             (TODO)
 

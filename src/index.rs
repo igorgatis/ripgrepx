@@ -10,7 +10,6 @@
 //! stop being candidates. See `docs/index-and-storage.md` sections 3.1 and 5.
 
 use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -252,9 +251,9 @@ impl Index {
             w.write_all(&[e.live as u8])?;
             write_u64(&mut w, e.size)?;
             write_u64(&mut w, e.mtime_ns)?;
-            let pb = e.path.as_os_str().as_bytes();
+            let pb = path_to_bytes(&e.path);
             write_u32(&mut w, pb.len() as u32)?;
-            w.write_all(pb)?;
+            w.write_all(&pb)?;
         }
         write_u64(&mut w, self.postings.len() as u64)?;
         let mut buf = Vec::new();
@@ -290,7 +289,7 @@ impl Index {
             let plen = read_u32(&mut r)? as usize;
             let mut pb = vec![0u8; plen];
             r.read_exact(&mut pb)?;
-            let path = PathBuf::from(std::ffi::OsStr::from_bytes(&pb));
+            let path = path_from_bytes(&pb);
             path_to_id.insert(path.clone(), id as u32);
             entries.push(FileEntry {
                 path,
@@ -321,6 +320,29 @@ impl Index {
             postings,
         })
     }
+}
+
+/// Encode a path for the snapshot. The snapshot is a per-machine rebuildable cache, so each platform
+/// only needs to round-trip its own paths: Unix uses the raw OS bytes (zero-copy, unchanged); other
+/// platforms use UTF-8 (lossy for the rare non-Unicode path, which the next rebuild repairs).
+#[cfg(unix)]
+fn path_to_bytes(p: &Path) -> std::borrow::Cow<'_, [u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    std::borrow::Cow::Borrowed(p.as_os_str().as_bytes())
+}
+#[cfg(not(unix))]
+fn path_to_bytes(p: &Path) -> std::borrow::Cow<'_, [u8]> {
+    std::borrow::Cow::Owned(p.to_string_lossy().into_owned().into_bytes())
+}
+
+#[cfg(unix)]
+fn path_from_bytes(b: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(b))
+}
+#[cfg(not(unix))]
+fn path_from_bytes(b: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(b).into_owned())
 }
 
 fn write_u32(w: &mut impl Write, v: u32) -> std::io::Result<()> {
