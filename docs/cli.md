@@ -42,10 +42,14 @@ position goes straight to ripgrep). Two are search modes; `--server` gates every
 | `rgx --server` | Run the index server in the foreground. |
 | `rgx --server start` | Start the background indexer for this project. |
 | `rgx --server stop` | Stop the background indexer for this project. |
-| `rgx --server status` | What's indexed, db/index health, whether an update is in flight. |
+| `rgx --server status` | One-shot snapshot: index state, file/trigram counts, memory, snapshot size and last-sync age. |
+| `rgx --server watch` | Live status: repaints on every change (cold-build progress count, then each reconcile) until interrupted. |
 | `rgx --server mcp` | Serve search to AI agents over MCP (stdio). |
 
-`--server status` also prints the path of the loaded config file, so you know which `.toml` to edit.
+`--server` subcommands act on the **current directory's** project (run them from, or `cd` into, the
+repo). `watch` is the interactive companion to `status` — e.g. run `rgx --server watch` in another
+pane to see a cold index build climb `building N / M files` to `ready`, with no measurable cost to
+the indexing itself.
 
 ### Searching for a literal that looks like a flag
 

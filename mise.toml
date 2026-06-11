@@ -1,5 +1,7 @@
 [tools]
+hyperfine = "latest"
 rust = { version = "1.96.0", components = "clippy,rustfmt" }
+fd = "latest"
 
 [env]
 RUST_BACKTRACE = "1"

@@ -11,3 +11,23 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"
+regex-syntax = "0.8"
+ignore = "0.4"
+rayon = "1"
+roaring = "0.10"
+rustc-hash = "2"
+memchr = "2"
+grep = "0.4"
+termcolor = "1"
+notify-debouncer-full = "0.5"
+
+[dev-dependencies]
+regex = "1"
+
+[lib]
+name = "rgx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rgx"
+path = "src/main.rs"

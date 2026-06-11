@@ -1,0 +1,31 @@
+# rgx vs rg benchmark baseline (2026-06-11)
+# host: 12cpu/24GB  rg 15.1.0
+
+### lucene
+repo=/Users/igorgatis/depot/lucene
+root=/Users/igorgatis/depot/lucene ready=true files=7426 trigrams=203276 snapshot=/Users/igorgatis/.cache/rgx/8a0b8bf402d8b868/index.bin 
+pattern                                          rg(ms)    rgx(ms)   speedup verdict
+IndexWriter                                       103.7       17.0     6.11x OK
+TokenStream|IndexWriter|BytesRef                  108.1       42.3     2.56x OK
+MergePolicy                                       102.3        8.1    12.58x OK
+\w+Exception                                      114.5       76.7     1.49x OK
+.*                                                135.0      137.1     0.98x OK
+
+### vscode
+repo=/Users/igorgatis/depot/vscode
+root=/Users/igorgatis/depot/vscode ready=true files=15116 trigrams=416404 snapshot=/Users/igorgatis/.cache/rgx/32b642b1ab1c16f4/index.bin 
+pattern                                          rg(ms)    rgx(ms)   speedup verdict
+registerCommand                                   198.3       14.0    14.17x OK
+IDisposable|registerCommand|createDecorator       201.9       35.6     5.68x OK
+createDecorator                                   197.0       12.5    15.72x OK
+\w+Service                                        211.6      112.4     1.88x OK
+### linux
+repo=/Users/igorgatis/depot/linux
+root=/Users/igorgatis/depot/linux ready=true files=93596 trigrams=549600 snapshot=/Users/igorgatis/.cache/rgx/83cdeec83b752f66/index.bin 
+pattern                                          rg(ms)    rgx(ms)   speedup verdict
+EXPORT_SYMBOL_GPL                                2639.2       53.1    49.70x OK
+spin_lock_irqsave                                2972.9       56.4    52.67x OK
+task_struct|spin_lock|mutex_lock                 2942.8      173.3    16.98x OK
+struct \w+_ops                                 2838.9      208.2    13.64x OK
+devm_kzalloc                                     2671.1       76.2    35.07x OK
+.*                                               1812.6     1817.5     1.00x OK
