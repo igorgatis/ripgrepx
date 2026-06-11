@@ -77,9 +77,10 @@ Reuse ripgrep's own crates so the indexed file set is **exactly** what `rg` woul
 
 - **Walk:** `ignore::WalkBuilder::new(root).build_parallel()` with default settings, which equal
   `rg`'s defaults (hidden skipped, all git rules on, `.ignore` on, `parents`, `require_git`).
-- **Parallel index:** each rayon worker reads a file, computes its distinct trigrams, and merges into
-  256 mutex-sharded posting maps keyed by `trigram & 255` (negligible contention); a per-worker
-  progress counter feeds the live build display.
+- **Parallel index:** each rayon worker reads a file and dedups its trigrams with a reused
+  2²⁴-bit sparse bitset (bit-test, cleared via the distinct list — faster than hashing dense 24-bit
+  keys), then merges into 256 mutex-sharded posting maps keyed by `trigram & 255` (negligible
+  contention); a per-worker progress counter feeds the live build display.
 - **Serve immediately:** the daemon binds and answers before the first build finishes; until the
   index is ready, queries run a full in-process scan (correct, just not yet accelerated). A persisted
   snapshot makes warm starts instant (§7).

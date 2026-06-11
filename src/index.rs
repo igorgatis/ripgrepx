@@ -366,31 +366,43 @@ fn index_files(
     progress: &AtomicUsize,
 ) -> (Vec<(u64, u64)>, FxHashMap<u32, RoaringBitmap>) {
     const SHARDS: usize = 256;
+    const TRIGRAM_WORDS: usize = (1 << 24) / 64; // one bit per possible 24-bit trigram
     let shards: Vec<Mutex<FxHashMap<u32, RoaringBitmap>>> = (0..SHARDS)
         .map(|_| Mutex::new(FxHashMap::default()))
         .collect();
 
-    // Per-worker scratch reused across files: the distinct-trigram set and the per-shard grouping
-    // buffers (avoids allocating 256 Vecs per file across the whole tree).
+    // Per-worker scratch reused across files: a sparse bitset that dedups a file's trigrams by
+    // bit-test (24-bit keys are dense, so this beats hashing), the resulting distinct keys, and the
+    // per-shard grouping buffers. The bitset is cleared via the distinct list, so clearing is O(set
+    // bits), not O(2^24).
     let init = || {
         (
-            FxHashSet::<Trigram>::default(),
+            vec![0u64; TRIGRAM_WORDS],
+            Vec::<u32>::new(),
             vec![Vec::<u32>::new(); SHARDS],
         )
     };
     let metas: Vec<(u64, u64)> = paths
         .par_iter()
         .enumerate()
-        .map_init(init, |(seen, by_shard), (id, path)| {
+        .map_init(init, |(bits, distinct, by_shard), (id, path)| {
             progress.fetch_add(1, Ordering::Relaxed);
             let id = id as u32;
             let (size, mtime_ns) = stat(path);
             if let Ok(bytes) = std::fs::read(path)
-                && collect_trigrams(&bytes, seen)
+                && !is_binary_from_start(&bytes)
             {
-                by_shard.iter_mut().for_each(Vec::clear);
-                for &t in seen.iter() {
+                distinct.clear();
+                trigram::for_each(&bytes, |t| {
                     let key = trigram::pack(t);
+                    let (w, b) = ((key >> 6) as usize, key & 63);
+                    if bits[w] & (1u64 << b) == 0 {
+                        bits[w] |= 1u64 << b;
+                        distinct.push(key);
+                    }
+                });
+                by_shard.iter_mut().for_each(Vec::clear);
+                for &key in distinct.iter() {
                     by_shard[(key as usize) & (SHARDS - 1)].push(key);
                 }
                 for (s, keys) in by_shard.iter().enumerate() {
@@ -401,6 +413,9 @@ fn index_files(
                     for &key in keys {
                         g.entry(key).or_default().insert(id);
                     }
+                }
+                for &key in distinct.iter() {
+                    bits[(key >> 6) as usize] &= !(1u64 << (key & 63));
                 }
             }
             (size, mtime_ns)
