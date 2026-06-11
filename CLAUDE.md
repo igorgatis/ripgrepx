@@ -18,7 +18,8 @@ ripgrep does the matching. Correctness is ripgrep's, speed is ours.
 
 Tooling is managed by [mise](https://mise.jdx.dev). Run via `mise run <task>`:
 
-- `mise run build` — compile
+- `mise run build` — compile (debug)
+- `mise run build:release` — compile optimized release binary
 - `mise run test` — run tests
 - `mise run fmt` / `fmt-check` — format / check formatting
 - `mise run lint` — clippy, warnings as errors

@@ -10,6 +10,10 @@ RUST_BACKTRACE = "1"
 description = "Compile the project"
 run = "cargo build"
 
+[tasks."build:release"]
+description = "Compile the project (optimized release)"
+run = "cargo build --release"
+
 [tasks.run]
 description = "Run rgx (pass args after --)"
 run = "cargo run --"
