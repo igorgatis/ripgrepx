@@ -19,24 +19,26 @@ echo "repo=$REPO"
 # Warm the daemon and wait until the index is ready.
 "$RGX" "warmup_token_$$" "$REPO" >/dev/null 2>&1
 for _ in $(seq 1 60); do
-  ( cd "$REPO" && "$RGX" --server status 2>/dev/null | grep -q "ready=true" ) && break
+  ( cd "$REPO" && "$RGX" --server status 2>/dev/null | grep -qE 'state +ready' ) && break
   sleep 0.5
 done
 ( cd "$REPO" && "$RGX" --server status 2>/dev/null | tr '\n' ' ' ); echo
 
-printf "%-44s %10s %10s %9s %s\n" "pattern" "rg(ms)" "rgx(ms)" "speedup" "verdict"
+# mean and stddev (ms) of a hyperfine run, as "mean stddev".
+stats() { python3 -c "import json;r=json.load(open('$1'))['results'][0];print(r['mean']*1000,(r.get('stddev') or 0)*1000)"; }
+
+printf "%-40s %14s %14s %9s %s\n" "pattern" "rg ms" "rgx ms" "speedup" "verdict"
 regressed=0
 for pat in "$@"; do
-  rg_ms=$("$HF" -N -w 1 -r "$RUNS" --export-json /tmp/_b_rg.json "$RG -n -- '$pat' '$REPO'" >/dev/null 2>&1 \
-    && python3 -c "import json;print(json.load(open('/tmp/_b_rg.json'))['results'][0]['mean']*1000)")
-  rgx_ms=$("$HF" -N -w 1 -r "$RUNS" --export-json /tmp/_b_rgx.json "$RGX '$pat' '$REPO'" >/dev/null 2>&1 \
-    && python3 -c "import json;print(json.load(open('/tmp/_b_rgx.json'))['results'][0]['mean']*1000)")
-  verdict=$(python3 -c "
-rg=$rg_ms; rgx=$rgx_ms; tol=$TOLERANCE
-print('OK' if rgx <= rg*tol else 'REGRESSION')")
+  "$HF" -N -w 1 -r "$RUNS" --export-json /tmp/_b_rg.json "$RG -n -- '$pat' '$REPO'" >/dev/null 2>&1
+  read -r rg_m rg_s < <(stats /tmp/_b_rg.json)
+  "$HF" -N -w 1 -r "$RUNS" --export-json /tmp/_b_rgx.json "$RGX '$pat' '$REPO'" >/dev/null 2>&1
+  read -r rgx_m rgx_s < <(stats /tmp/_b_rgx.json)
+  verdict=$(python3 -c "print('OK' if $rgx_m <= $rg_m*$TOLERANCE else 'REGRESSION')")
   [ "$verdict" = "REGRESSION" ] && regressed=1
   python3 -c "
-rg=$rg_ms; rgx=$rgx_ms
-print('%-44s %10.1f %10.1f %8.2fx %s' % ('''$pat''', rg, rgx, rg/max(rgx,0.001), '''$verdict'''))"
+print('%-40s %14s %14s %8.2fx %s' % ('''$pat''',
+  '%.1f±%.1f' % ($rg_m, $rg_s), '%.1f±%.1f' % ($rgx_m, $rgx_s),
+  $rg_m/max($rgx_m,0.001), '''$verdict'''))"
 done
 exit $regressed

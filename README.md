@@ -59,15 +59,19 @@ See [`docs/mcp.md`](docs/mcp.md) for the full agent integration guide.
 rgx vs ripgrep on four real repositories, **warm daemon** (index resident). Output is byte-for-byte
 `rg`'s, so this measures only how much less work the index lets ripgrep do.
 
+Times are `mean ± σ` over 10 runs (one standard deviation):
+
 | repo | files | index size | cold build | example query | `rg` | `rgx` | speedup |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| lucene | 7.4k | 22 MB | ~1.5 s | `MergePolicy` | 102 ms | 8 ms | **12×** |
-| vscode | 15.1k | 46 MB | ~1.2 s | `createDecorator` | 199 ms | 13 ms | **16×** |
-| kubernetes | 30.2k | 53 MB | ~1.5 s | `PodSpec` | 423 ms | 16 ms | **27×** |
-| linux | 93.6k | 210 MB | ~7.4 s | `EXPORT_SYMBOL_GPL` | 1.42 s | 54 ms | **26×** |
+| lucene | 7.4k | 22 MB | ~1.5 s | `MergePolicy` | 102 ± 2 ms | 8.2 ± 0.2 ms | **12×** |
+| vscode | 15.1k | 46 MB | ~1.2 s | `createDecorator` | 200 ± 1 ms | 12.5 ± 0.2 ms | **16×** |
+| kubernetes | 30.2k | 53 MB | ~1.5 s | `PodSpec` | 422 ± 5 ms | 15.2 ± 0.3 ms | **27×** |
+| linux | 93.6k | 210 MB | ~7.4 s | `EXPORT_SYMBOL_GPL` | 1411 ± 37 ms | 54 ± 1 ms | **26×** |
 
 Across query classes (kubernetes): literal **12–27×**, alternation (`A|B|C`) **23×**. The win scales
-with repo size — the bigger the tree, the more ripgrep work the index removes.
+with repo size — the bigger the tree, the more ripgrep work the index removes. rgx is also markedly
+**more consistent**: its σ stays around 0.2–1.7 ms while a full `rg` scan's varies far more with cache
+state (e.g. linux `spin_lock_irqsave`: rg 2056 ± 698 ms vs rgx 55.6 ± 0.7 ms).
 
 **Honest caveat.** A *fallback* query that the index can't narrow — one with no usable trigram, e.g.
 `\w+` or a 2-char pattern — is handled by an in-process pipelined scan and lands at **parity** with
@@ -77,8 +81,8 @@ with repo size — the bigger the tree, the more ripgrep work the index removes.
 
 ### Methodology
 
-- Machine: 12-core / 24 GB, macOS; ripgrep 15.1.0; timings via `hyperfine` (1 warmup, median of 5),
-  output discarded.
+- Machine: 12-core / 24 GB, macOS; ripgrep 15.1.0; timings via `hyperfine` (1 warmup, 10 runs,
+  reported as mean ± σ), output discarded.
 - `rgx <pattern> <repo>` (CLI talking to its warm daemon) vs `rg -n <pattern> <repo>`; both pipe to
   the same sink, so the comparison is apples-to-apples.
 - Reproduce: `RGX=target/release/rgx bench/bench.sh <repo> <pattern>...` (the script warms the daemon,

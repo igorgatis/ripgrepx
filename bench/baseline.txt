@@ -1,31 +1,33 @@
 # rgx vs rg benchmark baseline (2026-06-11)
-# host: 12cpu/24GB  macOS  rg 15.1.0  hyperfine (warmup 1, median of 5)
-# warm daemon (index resident); reproduce with: RGX=target/release/rgx bench/bench.sh <repo> <pat>...
-# `.*` over linux (0.79x) is the documented degenerate "print every line" residual; see
-# docs/index-and-storage.md section 9b. Every realistic query is faster.
+# host: 12cpu/24GB  macOS  rg 15.1.0  hyperfine (warmup 1, 10 runs); times are mean±stddev ms
+# warm daemon (index resident); reproduce with: RUNS=10 RGX=target/release/rgx bench/bench.sh <repo> <pat>...
+# `.*` over linux (0.77x) is the documented degenerate "print every line" residual; see
+# docs/index-and-storage.md section 9b. Every realistic query is faster, and rgx is far more
+# consistent (tiny stddev) than a full rg scan.
 
 ### lucene  (7.4k files, index 19.2 MB)
-pattern                                          rg(ms)    rgx(ms)   speedup verdict
-IndexWriter                                       104.1       17.1     6.08x OK
-MergePolicy                                       101.7        8.3    12.25x OK
-TokenStream|IndexWriter|BytesRef                  107.5       42.6     2.52x OK
+pattern                                           rg ms         rgx ms   speedup verdict
+MergePolicy                                   101.5±1.5        8.2±0.2    12.41x OK
+IndexWriter                                   103.2±0.9       17.2±0.2     6.00x OK
+TokenStream|IndexWriter|BytesRef              108.6±0.6       42.8±0.4     2.53x OK
 
 ### vscode  (15.1k files, index 41.5 MB)
-pattern                                          rg(ms)    rgx(ms)   speedup verdict
-registerCommand                                   200.0       13.9    14.33x OK
-createDecorator                                   199.4       12.5    15.97x OK
-IDisposable|registerCommand|createDecorator       203.0       35.4     5.73x OK
+pattern                                           rg ms         rgx ms   speedup verdict
+createDecorator                               199.7±1.2       12.5±0.2    16.01x OK
+registerCommand                               199.5±1.3       14.1±0.4    14.19x OK
+IDisposable|registerCommand|createDecorator      203.1±1.7       34.8±0.5     5.84x OK
 
 ### kubernetes  (30.2k files, index 46.6 MB)
-pattern                                          rg(ms)    rgx(ms)   speedup verdict
-PodSpec                                           423.5       15.5    27.37x OK
-kubelet                                           420.7       35.7    11.77x OK
-DaemonSet|StatefulSet|ReplicaSet                  426.0       18.4    23.12x OK
-Po (fallback, in-process)                         432.5      445.8     0.97x OK
-.* (fallback, in-process)                         531.1      563.5     0.94x OK
+pattern                                           rg ms         rgx ms   speedup verdict
+PodSpec                                       422.2±5.2       15.2±0.3    27.74x OK
+kubelet                                       417.2±8.0       35.6±0.5    11.72x OK
+DaemonSet|StatefulSet|ReplicaSet              426.1±8.9       18.6±0.5    22.94x OK
+Po (fallback, in-process)                     440.1±7.7      428.4±8.0     1.03x OK
+.* (fallback, in-process)                     522.0±5.9      555.0±5.2     0.94x OK
 
 ### linux  (93.6k files, index 197.9 MB)
-pattern                                          rg(ms)    rgx(ms)   speedup verdict
-EXPORT_SYMBOL_GPL                                1422.3       54.2    26.26x OK
-task_struct|spin_lock|mutex_lock                 1977.7      174.7    11.32x OK
-.* (fallback, match-everything)                  1844.8     2336.0     0.79x REGRESSION (degenerate; documented)
+pattern                                           rg ms         rgx ms   speedup verdict
+EXPORT_SYMBOL_GPL                           1410.8±36.8       53.9±1.2    26.18x OK
+spin_lock_irqsave                          2055.6±698.3       55.6±0.7    36.97x OK
+task_struct|spin_lock|mutex_lock           2617.0±138.7      175.1±1.7    14.95x OK
+.* (fallback, match-everything)             1859.3±32.9     2411.6±96.7     0.77x REGRESSION (degenerate; documented)
