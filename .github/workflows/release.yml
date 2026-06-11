@@ -8,7 +8,20 @@ permissions:
   contents: write
 
 jobs:
+  # A tag push does not create a GitHub Release, so make one first; the upload jobs attach to it.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+
   upload:
+    needs: create-release
     name: ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -30,7 +43,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Builds with --release, archives the `rgx` binary (.tar.gz on unix, .zip on windows),
       # installs the target / uses cross for non-native ones, and uploads to the tag's release.
       - uses: taiki-e/upload-rust-binary-action@v1
