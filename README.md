@@ -1,85 +1,65 @@
 # ripgrepx (`rgx`)
 
-**Instant ripgrep for projects you search again and again.**
+**Instant ripgrep for codebases you search over and over.**
 
-`rgx` keeps a persistent, always-fresh index of which files contain what, so every search jumps
-straight to the candidate files instead of walking the whole tree — but **ripgrep still does the
-matching**, so results, patterns, flags, and output are byte-for-byte what `rg` gives you. It's a
-true drop-in: `alias rg=rgx` and every command you already type just gets faster. A stale or
-imperfect index can only cost a little speed, never a missed or invented match.
+`rgx` keeps a fresh index of which files contain what, so each search jumps straight to the candidate
+files — but **ripgrep still does the matching**, so results are byte-for-byte `rg`'s, just faster. A
+stale index can only cost a little speed, never a missed or invented match. It searches content (full
+ripgrep regex) and locates files by name (find/fd-style), from the terminal or an AI agent over MCP.
 
-`rgx` aims to be the **one stop shop for finding things in a codebase** — content search with full
-ripgrep semantics, plus file/directory lookup by name or path (find/fd-style) — usable both from
-the terminal and directly by AI agents over MCP.
+## For AI agents
 
-## Install & use
+`rgx` is built first for AI coding agents: fast, token-frugal code search an agent calls over **MCP**
+or as a **CLI**. It is self-contained — ripgrep's engine is linked in, so you do **not** need `rg`
+installed.
 
-> Installation is still TBD.
-
-Alias `rgx` over ripgrep and keep working exactly as before — every command just gets faster:
+### Install
 
 ```sh
-alias rg=rgx
-rg TODO -t rust          # accelerated content search, identical results to plain rg
-rgx --find config        # locate files/dirs by name or path (find/fd-style)
-rgx --server status      # index health, and whether an update is in flight
-```
+# 1. Get the binary
+#    - download from GitHub releases:  https://github.com/igorgatis/rgx/releases   (TODO)
+#    - or via npm:  npm install -g rgx                                             (TODO)
 
-A bare `rgx <pattern>` is always a plain (accelerated) ripgrep search; the `--server` gate holds the
-daemon commands. See [`docs/cli.md`](docs/cli.md) for the full surface.
+# 2. Teach your agent to prefer rgx over rg/grep/find/fd (installs ~/.claude/skills/rgx/SKILL.md)
+rgx --skill
 
-### Where state lives
-
-The index and daemon socket are kept outside the repo, under a per-project cache dir keyed by the
-canonical root — rgx never writes into the tree it indexes. The location resolves as:
-
-- `$RGX_CACHE_DIR/<hash>/` if set — relocates **only** rgx's state;
-- else `$XDG_CACHE_HOME/rgx/<hash>/` (note: `$XDG_CACHE_HOME` is shared by other tools);
-- else `~/.cache/rgx/<hash>/`.
-
-The contents are a rebuildable cache — safe to delete; rgx re-indexes on the next run.
-
-### Token-savings view (`--compact`)
-
-For agents (or anyone) who want a denser result, `rgx --compact <pattern>` groups matches by file
-(the path is printed once), pages the output, and trims very long lines around the match:
-
-```sh
-rgx --compact 'fn .*Handler'     # grouped + paged; footer shows the next-page command
-rgx --compact --page 2 'fn .*Handler'
-```
-
-This is the one surface that is not byte-for-byte `rg`, and the trade is narrow: the match set is
-still exactly ripgrep's — nothing is added or silently dropped. Pagination is the only volume
-control, and because the index is warm, fetching the next page is cheap, so every match stays
-reachable. Over MCP this is how `content_search` returns results (pass `page` to advance).
-
-## Use with AI agents (MCP)
-
-`rgx` is self-contained — ripgrep's engine is linked in, so **you do not need `rg` installed**.
-
-Register `rgx` as an MCP server so an agent can search through it:
-
-```sh
+# 3. (optional) Register it as an MCP server
 claude mcp add rgx -- rgx --server mcp        # Claude Code
 ```
 
-or add it to any MCP client config:
+### Token savings (`--compact` + `--page`)
 
-```json
-{ "rgx": { "command": "rgx", "args": ["--server", "mcp"] } }
-```
-
-The MCP server exposes `content_search`, `file_search`, and `status` tools. `content_search` returns
-the token-savings view (grouped by file, paged — pass `page` to advance), with a match set identical
-to `rg`. To also teach an agent to *prefer* `rgx` over `rg`/`grep`/`find`/`fd`, install the bundled
-skill:
+Like [rtk](https://github.com/rtk-ai/rtk), `rgx` can compact search output to save agent tokens:
+`--compact` groups matches by file (the path is printed once), pages the result, and trims very long
+lines around the match. Unlike a lossy filter, **nothing is dropped** — the match set is exactly
+`rg`'s, and because the index is warm, fetching the next page is cheap, so every match stays
+reachable.
 
 ```sh
-rgx --skill        # installs ~/.claude/skills/rgx/SKILL.md and prints MCP setup
+rgx --compact 'fn .*Handler'             # grouped + paged; footer prints the next-page command
+rgx --compact --page 2 'fn .*Handler'    # next page (also -p 2)
 ```
 
-See [`docs/mcp.md`](docs/mcp.md) for the full agent integration guide.
+```
+[page 1/3 · 142 matches in 18 files]
+src/server.rs
+  210: fn content_search(...) -> Result<()> {
+src/main.rs
+  168: fn content_cmd(args: &[String]) -> ExitCode {
+next: rgx --compact --page 2 'fn .*Handler'
+```
+
+### MCP or CLI
+
+- **MCP** — `rgx --server mcp` exposes `content_search` (returns the `--compact` paged view by
+  default; pass `page` to advance), `file_search`, and `status`. See [`docs/mcp.md`](docs/mcp.md).
+- **CLI** — a true drop-in for `rg`: `alias rg=rgx` and every command just gets faster. A bare
+  `rgx <pattern>` is plain (accelerated) ripgrep; `rgx --find <name>` locates files; `--server`
+  manages the daemon. See [`docs/cli.md`](docs/cli.md).
+
+State (index + daemon socket) lives outside the repo under `$RGX_CACHE_DIR`, else
+`$XDG_CACHE_HOME/rgx`, else `~/.cache/rgx` — a rebuildable cache, safe to delete, never written into
+the indexed tree.
 
 ## Benchmarks
 
