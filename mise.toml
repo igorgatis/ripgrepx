@@ -1,0 +1,40 @@
+[tools]
+rust = { version = "1.96.0", components = "clippy,rustfmt" }
+
+[env]
+RUST_BACKTRACE = "1"
+
+[tasks.build]
+description = "Compile the project"
+run = "cargo build"
+
+[tasks.run]
+description = "Run rgx (pass args after --)"
+run = "cargo run --"
+
+[tasks.test]
+description = "Run the test suite"
+run = "cargo test"
+
+[tasks.fmt]
+description = "Format all code"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check formatting without modifying files"
+run = "cargo fmt --all -- --check"
+
+[tasks.lint]
+description = "Lint with clippy, warnings as errors"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
+
+[tasks.fix]
+description = "Auto-fix clippy lints and formatting"
+run = [
+  "cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged",
+  "cargo fmt --all",
+]
+
+[tasks.ci]
+description = "Format check, lint, and test"
+depends = ["fmt-check", "lint", "test"]
