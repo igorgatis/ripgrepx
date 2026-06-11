@@ -63,10 +63,10 @@ Times are `mean ± σ` over 10 runs (one standard deviation):
 
 | repo | files | index size | cold build | example query | `rg` | `rgx` | speedup |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| lucene | 7.4k | 22 MB | ~1.5 s | `MergePolicy` | 102 ± 2 ms | 8.2 ± 0.2 ms | **12×** |
-| vscode | 15.1k | 46 MB | ~1.2 s | `createDecorator` | 200 ± 1 ms | 12.5 ± 0.2 ms | **16×** |
-| kubernetes | 30.2k | 53 MB | ~1.5 s | `PodSpec` | 422 ± 5 ms | 15.2 ± 0.3 ms | **27×** |
-| linux | 93.6k | 210 MB | ~7.4 s | `EXPORT_SYMBOL_GPL` | 1411 ± 37 ms | 54 ± 1 ms | **26×** |
+| [lucene](https://github.com/apache/lucene) | 7.4k | 22 MB | ~1.5 s | `MergePolicy` | 102 ± 2 ms | 8.2 ± 0.2 ms | **12×** |
+| [vscode](https://github.com/microsoft/vscode) | 15.1k | 46 MB | ~1.2 s | `createDecorator` | 200 ± 1 ms | 12.5 ± 0.2 ms | **16×** |
+| [kubernetes](https://github.com/kubernetes/kubernetes) | 30.2k | 53 MB | ~1.5 s | `PodSpec` | 422 ± 5 ms | 15.2 ± 0.3 ms | **27×** |
+| [linux](https://github.com/torvalds/linux) | 93.6k | 210 MB | ~7.4 s | `EXPORT_SYMBOL_GPL` | 1411 ± 37 ms | 54 ± 1 ms | **26×** |
 
 Across query classes (kubernetes): literal **12–27×**, alternation (`A|B|C`) **23×**. The win scales
 with repo size — the bigger the tree, the more ripgrep work the index removes. rgx is also markedly
