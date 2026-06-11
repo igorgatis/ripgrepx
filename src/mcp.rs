@@ -13,6 +13,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use crate::client;
+use crate::compact::{self, CompactOpts};
 use crate::confirm::SearchOptions;
 use crate::proto::Request;
 
@@ -83,16 +84,8 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                 multi_line: arg_bool(args, "multi_line"),
                 ..Default::default()
             };
-            tool_result(
-                id,
-                &run_request(
-                    root,
-                    &Request::Search {
-                        opts,
-                        pattern: pattern.to_string(),
-                    },
-                ),
-            )
+            let page = arg_usize(args, "page").unwrap_or(1);
+            tool_result(id, &compact_search(root, pattern, opts, page))
         }
         Some("file_search") => {
             let Some(query) = args.and_then(|a| a.get("query")).and_then(Value::as_str) else {
@@ -121,6 +114,39 @@ fn arg_bool(args: Option<&Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn arg_usize(args: Option<&Value>, key: &str) -> Option<usize> {
+    args.and_then(|a| a.get(key))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+}
+
+/// Run a content search and return the token-savings view: results grouped by file and paged, with a
+/// hint to fetch the next page. Matching is identical to `rg`; only presentation differs (see
+/// `compact`). Paging is cheap (warm index), so an agent pulls more on demand rather than dumping all.
+fn compact_search(root: &Path, pattern: &str, opts: SearchOptions, page: usize) -> String {
+    let raw = match crate::collect_search(root, pattern, opts) {
+        Ok(b) => b,
+        Err(e) => return format!("error: {e}"),
+    };
+    let p = compact::format(
+        &raw,
+        pattern,
+        opts,
+        CompactOpts {
+            page,
+            ..Default::default()
+        },
+    );
+    let mut text = format!("{}\n{}", p.header, p.body);
+    if p.has_more() {
+        text.push_str(&format!(
+            "\n(more: call content_search with page: {})",
+            p.page + 1
+        ));
+    }
+    text
+}
+
 fn run_request(root: &Path, req: &Request) -> String {
     match client::request(root, req) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
@@ -132,7 +158,13 @@ fn tools() -> Value {
     json!({"tools": [
         {
             "name": "content_search",
-            "description": "Search file contents with a regex (ripgrep semantics, accelerated by an index). Returns path:line:text.",
+            "description": concat!(
+                "Search file contents with a regex (ripgrep semantics, accelerated by an index). ",
+                "Results are grouped by file and paged: the match set is identical to ripgrep, nothing ",
+                "is dropped. Paging is cheap (the index is warm), so narrow the pattern when you can, ",
+                "but prefer fetching the next page over a broad dump. Long lines are trimmed around the ",
+                "match (read the file for the full line)."
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -140,7 +172,8 @@ fn tools() -> Value {
                     "case_insensitive": {"type": "boolean"},
                     "word": {"type": "boolean", "description": "match only whole words (-w)"},
                     "fixed_strings": {"type": "boolean", "description": "treat pattern as a literal (-F)"},
-                    "multi_line": {"type": "boolean"}
+                    "multi_line": {"type": "boolean"},
+                    "page": {"type": "integer", "description": "1-based page number; the response tells you when more pages exist"}
                 },
                 "required": ["pattern"]
             }
@@ -190,6 +223,14 @@ mod tests {
         .unwrap();
         let pat = v["params"]["arguments"]["pattern"].as_str().unwrap();
         assert_eq!(pat, "café");
+    }
+
+    #[test]
+    fn content_search_advertises_paging() {
+        let listed = tools().to_string();
+        assert!(listed.contains("content_search"));
+        assert!(listed.contains("\"page\""));
+        assert!(listed.contains("page number"));
     }
 
     #[test]

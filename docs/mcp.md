@@ -36,17 +36,20 @@ The skill text is version-controlled in [`assets/skill.md`](../assets/skill.md).
 
 - **content search** — run a ripgrep query (regex by default, plus the usual literal / case /
   whole-word / glob / type / path-scope / context options). The index selects candidate files,
-  ripgrep confirms; results are identical to a plain `rg` run.
+  ripgrep confirms; the match set is identical to a plain `rg` run. Results are returned in the
+  token-savings view (grouped by file, paged) — pass `page` to fetch the next page.
 - **file search** — locate files/directories by partial name or path (find/fd-style).
 - **status** — what's indexed and whether an update is in flight.
 
 ## Response shape
 
-- Content matches come back as `path:line:text` (context lines, when requested, in ripgrep's
-  surrounding-line style).
+- Content matches come back grouped by file: a `path` line, then `  line: text` for each match
+  under it (context lines, when requested, use a `-` gutter). The leading header reports the page and
+  total match/file counts; a trailing hint says how to fetch the next page when one exists.
 - File search returns one path per line.
-- **Paging:** large result sets are paged — the response reports the window and how to ask for the
-  next page — so an agent pulls more on demand instead of receiving one giant dump.
+- **Paging:** results are paged — the response reports the window and tells the agent to call again
+  with the next `page` — so an agent pulls more on demand instead of receiving one giant dump.
+  Paging is cheap (the index is warm); nothing is dropped, so every match is reachable.
 - **Freshness inline, only when actionable:** if a returned line no longer matches what's on disk,
   it's flagged so the agent re-reads that file rather than trusting stale text.
 
@@ -65,11 +68,12 @@ in sync with behavior (see `CLAUDE.md`).
 
 This page describes the intended interface; the current stdio server implements a subset:
 
-- **content_search** — `pattern` (regex) plus `case_insensitive`; results as `path:line:text`.
+- **content_search** — `pattern` (regex) plus `case_insensitive` / `word` / `fixed_strings` /
+  `multi_line`, and `page`; results in the compact, paged, grouped-by-file view.
 - **file_search** — `query` substring over indexed paths.
 - **status** — index readiness and counts.
 
-Not yet wired through MCP: the full ripgrep flag set (whole-word/glob/type/context are in the CLI but
-not all surfaced as tool params), result **paging**, and inline **freshness flags**. These are
-planned — the freshness model is real at the engine level (ripgrep matches the file on disk), but the
-paging window and the stale-line marker are not yet emitted in tool responses.
+Not yet wired through MCP: the rest of the ripgrep flag set (glob/type/path-scope/context are in the
+CLI but not all surfaced as tool params) and inline **freshness flags**. Freshness is planned — the
+model is real at the engine level (ripgrep matches the file on disk), but the stale-line marker is not
+yet emitted in tool responses.

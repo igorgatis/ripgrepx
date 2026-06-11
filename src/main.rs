@@ -7,6 +7,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
+use rgx::compact::{self, CompactOpts};
 use rgx::confirm::SearchOptions;
 use rgx::paths::resolve_root;
 use rgx::proto::Request;
@@ -29,6 +30,7 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("--server") => server_cmd(&args[1..]),
+        Some("--compact") => compact_cmd(&args[1..]),
         Some("--find") => find_cmd(&args[1..]),
         Some("--skill") => match rgx::skill::install() {
             Ok(()) => ExitCode::SUCCESS,
@@ -47,8 +49,9 @@ fn main() -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage:\n  rgx [flags] <pattern> [path]     content search (accelerated ripgrep)\n  \
-         rgx --find <name|path> [path]    find files/dirs by name\n  \
+        "usage:\n  rgx [flags] <pattern> [path]            content search (accelerated ripgrep)\n  \
+         rgx --compact [--page N] <pattern> [path]  token-savings view: grouped + paged\n  \
+         rgx --find <name|path> [path]           find files/dirs by name\n  \
          rgx --server [start|stop|status|watch|mcp]\n\nflags: -i -s -w -F -U -A<n> -B<n> -C<n> --"
     );
 }
@@ -165,9 +168,19 @@ fn find_cmd(rest: &[String]) -> ExitCode {
     }
 }
 
-fn content_cmd(args: &[String]) -> ExitCode {
+/// The leading-token flag surface shared by content search and `--compact`. `compact` additionally
+/// recognizes `--page N` / `-p N` / `--page=N`. Errors are reported here; the `Err` carries the exit
+/// code so callers just propagate it.
+struct ParsedSearch<'a> {
+    opts: SearchOptions,
+    page: usize,
+    positionals: Vec<&'a str>,
+}
+
+fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a>, ExitCode> {
     let mut opts = SearchOptions::default();
     let mut positionals: Vec<&str> = Vec::new();
+    let mut page = 1usize;
     let mut only_positional = false; // set by `--`
     let mut i = 0;
 
@@ -187,12 +200,24 @@ fn content_cmd(args: &[String]) -> ExitCode {
             "-w" | "--word-regexp" => opts.word = true,
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
+            p if compact && (p == "-p" || p == "--page" || p.starts_with("--page=")) => {
+                let (n, consumed) = match page_value(args, i) {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("rgx: --page needs a number");
+                        return Err(ExitCode::from(2));
+                    }
+                };
+                page = n.max(1);
+                i += consumed;
+                continue;
+            }
             ctx if ctx.starts_with("-A") || ctx.starts_with("-B") || ctx.starts_with("-C") => {
                 let (n, consumed) = match context_value(args, i) {
                     Some(v) => v,
                     None => {
                         eprintln!("rgx: {ctx} needs a number");
-                        return ExitCode::from(2);
+                        return Err(ExitCode::from(2));
                     }
                 };
                 match &ctx[..2] {
@@ -208,13 +233,26 @@ fn content_cmd(args: &[String]) -> ExitCode {
             }
             other => {
                 eprintln!("rgx: unsupported flag {other:?} (drop-in flag surface is WIP)");
-                return ExitCode::from(2);
+                return Err(ExitCode::from(2));
             }
         }
         i += 1;
     }
+    Ok(ParsedSearch {
+        opts,
+        page,
+        positionals,
+    })
+}
 
-    let Some((pattern, rest)) = positionals.split_first() else {
+fn content_cmd(args: &[String]) -> ExitCode {
+    let parsed = match parse_search(args, false) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let opts = parsed.opts;
+
+    let Some((pattern, rest)) = parsed.positionals.split_first() else {
         usage();
         return ExitCode::from(2);
     };
@@ -268,6 +306,66 @@ fn content_cmd(args: &[String]) -> ExitCode {
     }
 }
 
+/// `--compact`: the token-savings view. Unlike a bare search, this must see the whole result set to
+/// count, group by file, and paginate — so it buffers instead of streaming, then renders one page.
+/// The match set is identical to `rg`; only presentation differs (see `compact`).
+fn compact_cmd(args: &[String]) -> ExitCode {
+    let parsed = match parse_search(args, true) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let opts = parsed.opts;
+    let Some((pattern, rest)) = parsed.positionals.split_first() else {
+        usage();
+        return ExitCode::from(2);
+    };
+    let pattern = pattern.to_string();
+    let path = rest.first().copied();
+    if rest.len() > 1 {
+        eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
+        return ExitCode::from(2);
+    }
+    let root = resolve_root(path);
+
+    let raw = match rgx::collect_search(&root, &pattern, opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rgx: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let page = compact::format(
+        &raw,
+        &pattern,
+        opts,
+        CompactOpts {
+            page: parsed.page,
+            ..Default::default()
+        },
+    );
+
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{}", page.header);
+    let _ = out.write_all(page.body.as_bytes());
+    if page.has_more() {
+        let next = path.map_or_else(
+            || shell_quote(&pattern),
+            |p| format!("{} {}", shell_quote(&pattern), shell_quote(p)),
+        );
+        let _ = writeln!(out, "next: rgx --compact --page {} {next}", page.page + 1);
+    }
+    if page.total_matches == 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Single-quote `s` for the next-page shell hint, escaping embedded single quotes.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// True if `e` is (or wraps) a broken-pipe I/O error.
 fn is_broken_pipe(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>()
@@ -284,11 +382,69 @@ fn context_value(args: &[String], i: usize) -> Option<(usize, usize)> {
     }
 }
 
+/// Parse `--page=N` (inline) or `--page N` / `-p N` (separate); returns (value, args_consumed).
+fn page_value(args: &[String], i: usize) -> Option<(usize, usize)> {
+    if let Some(n) = args[i].strip_prefix("--page=") {
+        return n.parse().ok().map(|v| (v, 1));
+    }
+    args.get(i + 1).and_then(|v| v.parse().ok()).map(|n| (n, 2))
+}
+
 fn emit(out: Vec<u8>) -> ExitCode {
     let _ = std::io::stdout().write_all(&out);
     if out.is_empty() {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_flags_pattern_and_path() {
+        let args = argv(&["-i", "-w", "needle", "src/"]);
+        let p = parse_search(&args, false).unwrap();
+        assert!(p.opts.case_insensitive && p.opts.word);
+        assert_eq!(p.page, 1);
+        assert_eq!(p.positionals, vec!["needle", "src/"]);
+    }
+
+    #[test]
+    fn compact_accepts_page_in_all_forms() {
+        for args in [
+            argv(&["--page", "3", "needle"]),
+            argv(&["-p", "3", "needle"]),
+            argv(&["--page=3", "needle"]),
+        ] {
+            let p = parse_search(&args, true).unwrap();
+            assert_eq!(p.page, 3, "args: {args:?}");
+            assert_eq!(p.positionals, vec!["needle"]);
+        }
+    }
+
+    #[test]
+    fn page_flag_is_rejected_outside_compact() {
+        assert!(parse_search(&argv(&["--page", "2", "needle"]), false).is_err());
+    }
+
+    #[test]
+    fn double_dash_makes_flaglike_pattern_positional() {
+        let args = argv(&["--", "--page"]);
+        let p = parse_search(&args, true).unwrap();
+        assert_eq!(p.positionals, vec!["--page"]);
+        assert_eq!(p.page, 1);
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("fn x"), "'fn x'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
     }
 }

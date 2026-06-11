@@ -23,8 +23,8 @@ rg -i needle
 
 ## The flag surface
 
-rgx adds exactly **three** flags to ripgrep's, recognized only as the **leading token** (any other
-position goes straight to ripgrep). Two are search modes; `--server` gates everything else — see
+rgx adds exactly **four** flags to ripgrep's, recognized only as the **leading token** (any other
+position goes straight to ripgrep). Three are search modes; `--server` gates everything else — see
 [`design.md`](design.md) for the rationale.
 
 ### Search modes
@@ -32,8 +32,24 @@ position goes straight to ripgrep). Two are search modes; `--server` gates every
 | Command | Purpose |
 | --- | --- |
 | `rgx <pattern> [rg flags...]` | Content search via ripgrep, accelerated. |
+| `rgx --compact [--page N] <pattern> [rg flags...]` | Same search, token-savings view: grouped by file, paged. |
 | `rgx --find <name\|path>` | Locate files/directories by name or path (find/fd-style). |
 | `rgx --skill` | Install the agent skill that teaches tools to use `rgx` (one-shot). |
+
+### `--compact` — the token-savings view
+
+`--compact` runs the same accelerated search but reshapes the output for agents (and anyone who wants
+a denser view):
+
+- **Grouped by file** — the path is printed once, then `  line: text` for each match under it.
+- **Paged** — a page of matches at a time; the footer prints the exact command for the next page
+  (`next: rgx --compact --page 2 '<pattern>' <path>`). Select a page with `--page N` (or `-p N`).
+- **Long lines trimmed** — lines longer than the column budget are truncated around the match, marked
+  with `…`; read the file for the full line.
+
+This is the one rgx surface whose output is **not** byte-for-byte `rg`. The match set is still exactly
+ripgrep's — nothing is added or silently dropped; pagination is the only volume control, so every
+match is reachable. All the usual search flags (`-i`, `-w`, `-F`, `-C`, …) still apply.
 
 ### `--server` — manage the index server
 

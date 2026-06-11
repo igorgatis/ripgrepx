@@ -28,6 +28,22 @@ rgx -C 3 pattern            # 3 lines of context (also -A / -B)
 - Patterns the index can't accelerate (e.g. `.`, `\w+`, very short patterns) transparently fall back
   to a full scan — still correct, just not faster.
 
+## Token-savings view (prefer this for broad searches)
+
+```sh
+rgx --compact <pattern> [path]       # grouped by file, paged, long lines trimmed
+rgx --compact --page 2 <pattern>     # next page (also -p 2)
+```
+
+- Use `--compact` when a search may return many matches. Output is grouped by file (path printed
+  once) and **paged**, which is far cheaper on tokens than a raw dump.
+- **Paging is cheap** — the index is warm, so re-running for the next page costs almost nothing.
+  Narrow the pattern or `path` when you can, but when results are legitimately large, **pull the next
+  page** (the footer prints the exact command) instead of widening into one giant search.
+- Nothing is dropped: the match set is identical to `rg`; every match is reachable by paging. Only
+  very long lines are trimmed around the match (`…`) — open the file if you need the full line.
+- Over MCP this is the default for `content_search`; pass `page` to advance.
+
 ## File / directory lookup (find/fd-style)
 
 ```sh
@@ -49,5 +65,7 @@ to start or manage it manually.
 
 - A result is matched against the file on disk at query time, so a returned line reflects current
   content. If you've just edited a file, a follow-up search sees the change within a moment.
-- Results may be paged for large result sets; narrow the pattern or scope by `path` rather than
-  pulling everything.
+- For large result sets, use `--compact` (CLI) or `content_search` paging (MCP): narrow the pattern
+  or `path` when you can, but pulling the next page is cheap — prefer it over a broad raw dump.
+- The index lives outside the repo (default `~/.cache/rgx/<hash>/`, or `$RGX_CACHE_DIR/<hash>/` if
+  set); it is a rebuildable cache, safe to delete, and never written into the indexed tree.

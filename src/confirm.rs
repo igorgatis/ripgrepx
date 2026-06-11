@@ -37,7 +37,7 @@ pub struct SearchOptions {
 /// result sets instead of buffering the whole corpus.
 const BATCH: usize = 512;
 
-fn build_matcher(pattern: &str, opts: SearchOptions) -> Result<RegexMatcher> {
+pub(crate) fn build_matcher(pattern: &str, opts: SearchOptions) -> Result<RegexMatcher> {
     Ok(RegexMatcherBuilder::new()
         .case_insensitive(opts.case_insensitive)
         .multi_line(opts.multi_line)

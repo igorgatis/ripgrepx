@@ -15,6 +15,7 @@ use std::path::Path;
 use anyhow::Result;
 
 pub mod client;
+pub mod compact;
 pub mod confirm;
 pub mod index;
 pub mod mcp;
@@ -100,6 +101,33 @@ pub fn stream_full_scan(
 ) -> Result<()> {
     let effective = effective_pattern(pattern, opts);
     confirm::full_scan(root.as_ref(), &effective, opts, sink)
+}
+
+/// Run a content search and buffer the whole `path:line:text` output, for callers that need the
+/// entire result at once (the compact/paged view) rather than a stream. Trigram-accelerable patterns
+/// go through the daemon (already path-sorted); fallback patterns scan in-process, where the parallel
+/// walk emits files in nondeterministic order — so we sort the per-file blocks, making the page
+/// windows reproducible across runs (the `next page` hint must resume the same sequence).
+pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
+    if is_fallback(pattern, opts) {
+        let chunks = std::sync::Mutex::new(Vec::<Vec<u8>>::new());
+        stream_full_scan(root, pattern, opts, |c| {
+            if let Ok(mut v) = chunks.lock() {
+                v.push(c.to_vec());
+            }
+        })?;
+        let mut chunks = chunks.into_inner().unwrap_or_default();
+        chunks.sort_unstable(); // each chunk is one file's block, so this orders by path
+        Ok(chunks.concat())
+    } else {
+        client::request(
+            root,
+            &proto::Request::Search {
+                opts,
+                pattern: pattern.to_string(),
+            },
+        )
+    }
 }
 
 /// Collecting convenience over [`stream_search`] (used in tests).

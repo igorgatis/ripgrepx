@@ -33,6 +33,15 @@ The division of labor is the whole point:
 This guarantee — correctness from ripgrep, speed from the index — should survive every future design
 decision.
 
+### The one deliberate exception: `--compact`
+
+The opt-in `--compact` view (and the MCP `page` parameter) reshapes output to save agent tokens:
+results are grouped by file (the path printed once), paged, and long lines are trimmed around the
+match. This is the **only** surface that is not byte-for-byte `rg`, and the carve-out is narrow: the
+**match set is still exactly ripgrep's** — nothing is added, and nothing is ever silently dropped
+(pagination is the sole volume control, and every match is reachable by fetching the next page). Only
+*presentation* changes. A bare `rgx <pattern>` is untouched, so the drop-in promise above still holds.
+
 ## Search scope
 
 Search semantics are **exactly ripgrep's**. `rgx` does **not** add symbol awareness or
@@ -49,10 +58,12 @@ installable skill — are core, not an afterthought.
 ## Drop-in and the `--server` gate
 
 A bare `rgx <pattern>` is always a plain ripgrep search, so rgx adds as few flags to rg's surface as
-possible — exactly three, and only ever recognized as the **leading token**:
+possible — four, and only ever recognized as the **leading token**:
 
 - **Search modes** — the bare `<pattern>` (content) and `--find` (file/dir names). These are
   searches, so they belong next to rg's flags.
+- **`--compact`** — the same content search rendered as the token-savings view (grouped + paged); it
+  also accepts `--page N`. An opt-in modifier, so the bare search stays `rg`-identical.
 - **`--skill`** — a one-shot install of the agent skill.
 - **`--server` (the gate)** — flips rgx out of ripgrep-passthrough into its own subcommand grammar
   (`start`, `stop`, `status`, `mcp`). Everything daemon-related lives behind it, so management never
