@@ -365,81 +365,70 @@ fn index_files(
     paths: &[PathBuf],
     progress: &AtomicUsize,
 ) -> (Vec<(u64, u64)>, FxHashMap<u32, RoaringBitmap>) {
+    const SHARDS: usize = 256;
     const TRIGRAM_WORDS: usize = (1 << 24) / 64; // one bit per possible 24-bit trigram
+    // Shared posting maps, sharded so workers rarely contend a lock. This keeps peak memory near the
+    // final index size (~one compressed copy), unlike per-worker maps which would multiply it by the
+    // worker count.
+    let shards: Vec<Mutex<FxHashMap<u32, RoaringBitmap>>> = (0..SHARDS)
+        .map(|_| Mutex::new(FxHashMap::default()))
+        .collect();
 
-    // Each rayon worker accumulates into its OWN posting map (no shared locks on the hot path), then
-    // the per-worker maps are unioned once at the end. Per-file scratch (reused across the worker's
-    // files): a sparse bitset that dedups trigrams by bit-test — 24-bit keys are dense, so this beats
-    // hashing — cleared via the distinct list (O(set bits), not O(2^24)).
-    type Worker = (
-        Vec<u64>,
-        Vec<u32>,
-        FxHashMap<u32, RoaringBitmap>,
-        Vec<(u32, u64, u64)>,
-    );
-    let init = || -> Worker {
+    // Per-worker scratch reused across files: a sparse bitset that dedups a file's trigrams by
+    // bit-test (24-bit keys are dense, so this beats hashing), the distinct keys, and the per-shard
+    // grouping buffers. The bitset is cleared via the distinct list, so clearing is O(set bits).
+    let init = || {
         (
             vec![0u64; TRIGRAM_WORDS],
-            Vec::new(),
-            FxHashMap::default(),
-            Vec::new(),
+            Vec::<u32>::new(),
+            vec![Vec::<u32>::new(); SHARDS],
         )
     };
-
-    let (postings, mut id_metas) = paths
+    let metas: Vec<(u64, u64)> = paths
         .par_iter()
         .enumerate()
-        .fold(
-            init,
-            |(mut bits, mut distinct, mut post, mut metas), (id, path)| {
-                progress.fetch_add(1, Ordering::Relaxed);
-                let id = id as u32;
-                let (size, mtime_ns) = stat(path);
-                if let Ok(bytes) = std::fs::read(path)
-                    && !is_binary_from_start(&bytes)
-                {
-                    distinct.clear();
-                    trigram::for_each(&bytes, |t| {
-                        let key = trigram::pack(t);
-                        let (w, b) = ((key >> 6) as usize, key & 63);
-                        if bits[w] & (1u64 << b) == 0 {
-                            bits[w] |= 1u64 << b;
-                            distinct.push(key);
-                        }
-                    });
-                    for &key in distinct.iter() {
-                        post.entry(key).or_default().insert(id);
-                        bits[(key >> 6) as usize] &= !(1u64 << (key & 63));
+        .map_init(init, |(bits, distinct, by_shard), (id, path)| {
+            progress.fetch_add(1, Ordering::Relaxed);
+            let id = id as u32;
+            let (size, mtime_ns) = stat(path);
+            if let Ok(bytes) = std::fs::read(path)
+                && !is_binary_from_start(&bytes)
+            {
+                distinct.clear();
+                trigram::for_each(&bytes, |t| {
+                    let key = trigram::pack(t);
+                    let (w, b) = ((key >> 6) as usize, key & 63);
+                    if bits[w] & (1u64 << b) == 0 {
+                        bits[w] |= 1u64 << b;
+                        distinct.push(key);
+                    }
+                });
+                by_shard.iter_mut().for_each(Vec::clear);
+                for &key in distinct.iter() {
+                    by_shard[(key as usize) & (SHARDS - 1)].push(key);
+                }
+                for (s, keys) in by_shard.iter().enumerate() {
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    let mut g = shards[s].lock().unwrap();
+                    for &key in keys {
+                        g.entry(key).or_default().insert(id);
                     }
                 }
-                metas.push((id, size, mtime_ns));
-                (bits, distinct, post, metas)
-            },
-        )
-        .map(|(_, _, post, metas)| (post, metas))
-        .reduce(
-            || (FxHashMap::default(), Vec::new()),
-            |(mut post, mut metas), (other_post, other_metas)| {
-                for (key, bm) in other_post {
-                    match post.get_mut(&key) {
-                        Some(existing) => *existing |= bm,
-                        None => {
-                            post.insert(key, bm);
-                        }
-                    }
+                for &key in distinct.iter() {
+                    bits[(key >> 6) as usize] &= !(1u64 << (key & 63));
                 }
-                metas.extend(other_metas);
-                (post, metas)
-            },
-        );
-
-    // `metas` arrived in worker order; restore file-id order for the entries table.
-    id_metas.sort_unstable_by_key(|&(id, _, _)| id);
-    let metas = id_metas
-        .into_iter()
-        .map(|(_, size, mtime)| (size, mtime))
+            }
+            (size, mtime_ns)
+        })
         .collect();
-    (metas, postings)
+
+    let mut merged = FxHashMap::default();
+    for shard in shards {
+        merged.extend(shard.into_inner().unwrap());
+    }
+    (metas, merged)
 }
 
 fn stat(path: &Path) -> (u64, u64) {
