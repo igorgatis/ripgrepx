@@ -54,6 +54,23 @@ pub fn is_fallback(pattern: &str, opts: SearchOptions) -> bool {
     Query::for_pattern(&effective_pattern(pattern, opts), query_options(opts)).is_fallback()
 }
 
+/// Resolve the candidate files for `pattern` as owned paths, so a caller holding the index lock can
+/// release it before the (potentially long) ripgrep confirm + output streaming — never hold the
+/// index lock across blocking I/O. A fallback pattern yields every live file.
+pub fn candidate_paths(
+    index: &Index,
+    pattern: &str,
+    opts: SearchOptions,
+) -> Vec<std::path::PathBuf> {
+    let effective = effective_pattern(pattern, opts);
+    let query = Query::for_pattern(&effective, query_options(opts));
+    index
+        .candidates(&query)
+        .into_iter()
+        .map(Path::to_path_buf)
+        .collect()
+}
+
 /// Stream a content search against a (ready) index, emitting `path:line:text` chunks via `emit`.
 ///
 /// One path for everything: the index turns the pattern into a candidate file set (a precise subset
@@ -71,10 +88,10 @@ pub fn stream_search(
     confirm::search_streaming(&effective, &paths, opts, emit)
 }
 
-/// Cold-start scan, used only while the daemon's index isn't built yet: walk the tree ripgrep would
-/// pipelined walk+search (matching ripgrep), streaming through `sink`. Used by the CLI for fallback
-/// queries (no usable trigram) and by the daemon's cold start, both fully in-process. Once the index
-/// is ready, [`stream_search`] handles trigram-accelerable patterns.
+/// Pipelined full-tree walk+search (matching ripgrep's model), streaming through `sink`. Used by the
+/// CLI for fallback queries (no usable trigram) and by the daemon's cold start before the first build
+/// finishes — both fully in-process. Once the index is ready, [`stream_search`] handles
+/// trigram-accelerable patterns.
 pub fn stream_full_scan(
     root: impl AsRef<Path>,
     pattern: &str,

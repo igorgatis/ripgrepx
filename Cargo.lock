@@ -433,6 +433,7 @@ dependencies = [
  "regex-syntax",
  "roaring",
  "rustc-hash",
+ "serde_json",
  "termcolor",
 ]
 

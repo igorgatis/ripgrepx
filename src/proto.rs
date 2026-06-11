@@ -115,9 +115,7 @@ pub fn end_stream(w: &mut impl Write) -> Result<()> {
 pub fn read_stream(r: &mut impl Read, sink: &mut impl Write) -> Result<usize> {
     let mut total = 0;
     loop {
-        let mut len = [0u8; 4];
-        r.read_exact(&mut len)?;
-        let n = u32::from_le_bytes(len) as usize;
+        let n = read_len(r)?;
         if n == 0 {
             return Ok(total);
         }
@@ -148,9 +146,26 @@ pub fn read_watch_frame(r: &mut impl Read) -> Result<Option<Vec<u8>>> {
     if n == 0 {
         return Ok(None);
     }
+    if n > MAX_FRAME {
+        bail!("frame length {n} exceeds maximum {MAX_FRAME}");
+    }
     let mut body = vec![0u8; n];
     r.read_exact(&mut body)?;
     Ok(Some(body))
+}
+
+/// Upper bound on a single frame, so a bogus/desynced length prefix can't trigger a multi-GB
+/// allocation. Generous (search results stream in many small frames; requests are tiny).
+const MAX_FRAME: usize = 512 * 1024 * 1024;
+
+fn read_len(r: &mut impl Read) -> Result<usize> {
+    let mut len = [0u8; 4];
+    r.read_exact(&mut len)?;
+    let n = u32::from_le_bytes(len) as usize;
+    if n > MAX_FRAME {
+        bail!("frame length {n} exceeds maximum {MAX_FRAME}");
+    }
+    Ok(n)
 }
 
 fn write_frame(w: &mut impl Write, body: &[u8]) -> Result<()> {
@@ -161,9 +176,7 @@ fn write_frame(w: &mut impl Write, body: &[u8]) -> Result<()> {
 }
 
 fn read_frame(r: &mut impl Read) -> Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    r.read_exact(&mut len)?;
-    let mut body = vec![0u8; u32::from_le_bytes(len) as usize];
+    let mut body = vec![0u8; read_len(r)?];
     r.read_exact(&mut body)?;
     Ok(body)
 }

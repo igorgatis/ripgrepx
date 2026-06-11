@@ -7,7 +7,7 @@
 use std::io::ErrorKind;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
@@ -32,25 +32,40 @@ struct Shared {
     /// Cold-build progress (files processed / total to process); only meaningful while building.
     indexed: AtomicUsize,
     total: AtomicUsize,
+    /// Posting-list footprint, cached so `status`/`watch` need not re-walk all postings each render.
+    index_bytes: AtomicU64,
     /// A change counter + condvar so `watch` wakes immediately on any transition.
     seq: Mutex<u64>,
     seq_cv: Condvar,
 }
 
 impl Shared {
-    /// Signal a state change (build done, reconcile applied) to wake watchers.
+    /// Read/write the index, recovering a poisoned lock rather than cascading panics across every
+    /// handler: the index is a rebuildable over-approximation, so continuing (and letting the next
+    /// reconcile repair it) is safer than wedging the daemon if one operation ever panics.
+    fn read_index(&self) -> std::sync::RwLockReadGuard<'_, Index> {
+        self.index.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn write_index(&self) -> std::sync::RwLockWriteGuard<'_, Index> {
+        self.index.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Signal a state change (build done, reconcile applied) to wake watchers; refresh the cached
+    /// posting footprint from the current index.
     fn bump(&self) {
-        *self.seq.lock().unwrap() += 1;
+        self.index_bytes
+            .store(self.read_index().memory_bytes(), Ordering::Relaxed);
+        *self.seq.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         self.seq_cv.notify_all();
     }
 
     /// Block until the change counter moves past `last` or the heartbeat elapses; return the latest.
     fn wait_change(&self, last: u64) -> u64 {
-        let g = self.seq.lock().unwrap();
+        let g = self.seq.lock().unwrap_or_else(|e| e.into_inner());
         let (g, _) = self
             .seq_cv
             .wait_timeout_while(g, WATCH_HEARTBEAT, |s| *s == last)
-            .unwrap();
+            .unwrap_or_else(|e| e.into_inner());
         *g
     }
 }
@@ -73,6 +88,7 @@ pub fn run(root: PathBuf) -> Result<()> {
         snapshot: paths::snapshot_path(&root),
         indexed: AtomicUsize::new(0),
         total: AtomicUsize::new(0),
+        index_bytes: AtomicU64::new(0),
         seq: Mutex::new(0),
         seq_cv: Condvar::new(),
     });
@@ -96,11 +112,11 @@ pub fn run(root: PathBuf) -> Result<()> {
 fn spawn_indexer(shared: Arc<Shared>) {
     std::thread::spawn(move || {
         if let Ok(idx) = Index::load(&shared.snapshot) {
-            *shared.index.write().unwrap() = idx;
+            *shared.write_index() = idx;
             shared.ready.store(true, Ordering::SeqCst);
             shared.bump();
             // catch changes made while the daemon was down
-            let mut idx = shared.index.write().unwrap();
+            let mut idx = shared.write_index();
             idx.reconcile(&shared.root);
             let _ = idx.save(&shared.snapshot);
             drop(idx);
@@ -112,7 +128,7 @@ fn spawn_indexer(shared: Arc<Shared>) {
             shared.bump();
             let built = Index::from_paths(&paths, &shared.indexed);
             let _ = built.save(&shared.snapshot);
-            *shared.index.write().unwrap() = built;
+            *shared.write_index() = built;
             shared.ready.store(true, Ordering::SeqCst);
             shared.bump();
         }
@@ -140,7 +156,7 @@ fn spawn_watcher(shared: Arc<Shared>) {
             if res.is_err() || !shared.ready.load(Ordering::SeqCst) {
                 continue;
             }
-            let mut idx = shared.index.write().unwrap();
+            let mut idx = shared.write_index();
             if idx.reconcile(&shared.root) > 0 {
                 let _ = idx.save(&shared.snapshot);
                 drop(idx);
@@ -153,24 +169,27 @@ fn spawn_watcher(shared: Arc<Shared>) {
 fn handle(mut conn: UnixStream, shared: &Shared, sock: &Path) -> Result<()> {
     let req = proto::read_request(&mut conn)?;
     match req {
+        // Errors here are essentially "client went away mid-stream"; ignore so we still attempt the
+        // stream terminator below — a request that produced N frames then errored should not look
+        // different to the client than a clean finish.
         Request::Search { opts, pattern } => {
-            content_search(shared, &pattern, opts, &mut conn)?;
+            let _ = content_search(shared, &pattern, opts, &mut conn);
         }
         Request::Find { needle, limit } => {
-            proto::write_data(&mut conn, &find(shared, &needle, limit as usize))?;
+            let _ = proto::write_data(&mut conn, &find(shared, &needle, limit as usize));
         }
         Request::Status => {
-            proto::write_data(&mut conn, &status(shared))?;
+            let _ = proto::write_data(&mut conn, &status(shared));
         }
         Request::Watch => return watch(shared, &mut conn),
         Request::Shutdown => {
-            proto::write_data(&mut conn, b"ok\n")?;
-            proto::end_stream(&mut conn)?;
+            let _ = proto::write_data(&mut conn, b"ok\n");
+            let _ = proto::end_stream(&mut conn);
             let _ = std::fs::remove_file(sock);
             std::process::exit(0);
         }
     }
-    proto::end_stream(&mut conn)?;
+    let _ = proto::end_stream(&mut conn);
     Ok(())
 }
 
@@ -195,8 +214,13 @@ fn content_search(
     conn: &mut UnixStream,
 ) -> Result<()> {
     if shared.ready.load(Ordering::SeqCst) {
-        let idx = shared.index.read().unwrap();
-        crate::stream_search(&idx, pattern, opts, |chunk| {
+        // Resolve candidates while holding the read lock, then RELEASE it before streaming: ripgrep
+        // confirm + blocking socket writes must never run under the index lock, or a slow client
+        // would block the watcher's write lock and freeze indexing.
+        let paths = crate::candidate_paths(&shared.read_index(), pattern, opts);
+        let effective = crate::effective_pattern(pattern, opts);
+        let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        crate::confirm::search_streaming(&effective, &refs, opts, |chunk| {
             proto::write_data(&mut *conn, chunk)
         })
     } else {
@@ -213,27 +237,25 @@ fn content_search(
 
 fn find(shared: &Shared, needle: &str, limit: usize) -> Vec<u8> {
     let mut out = String::new();
+    let mut push = |p: &Path| {
+        out.push_str(&p.to_string_lossy());
+        out.push('\n');
+    };
     if shared.ready.load(Ordering::SeqCst) {
-        let idx = shared.index.read().unwrap();
-        for p in idx.find(needle, limit) {
-            out.push_str(&p.to_string_lossy());
-            out.push('\n');
-        }
+        let idx = shared.read_index();
+        idx.find(needle, limit).into_iter().for_each(&mut push);
     } else {
-        for p in index::walk_files(&shared.root)
+        index::walk_files(&shared.root)
             .iter()
             .filter(|p| p.to_string_lossy().contains(needle))
             .take(limit)
-        {
-            out.push_str(&p.to_string_lossy());
-            out.push('\n');
-        }
+            .for_each(|p| push(p));
     }
     out.into_bytes()
 }
 
 fn status(shared: &Shared) -> Vec<u8> {
-    let idx = shared.index.read().unwrap();
+    let idx = shared.read_index();
     let state = if shared.ready.load(Ordering::SeqCst) {
         "ready".to_string()
     } else {
@@ -256,7 +278,7 @@ fn status(shared: &Shared) -> Vec<u8> {
         state: Some(state),
         files: Some(idx.file_count()),
         trigrams: Some(idx.trigram_count()),
-        memory_bytes: Some(idx.memory_bytes()),
+        memory_bytes: Some(shared.index_bytes.load(Ordering::Relaxed)),
     }
     .render()
     .into_bytes()

@@ -99,7 +99,12 @@ impl Index {
                 self.entries[id as usize].live = false;
             }
         }
+        let mut seen = FxHashSet::default();
         for path in changed {
+            // Stat BEFORE read: if the file is rewritten between our read and stat, we must record an
+            // mtime no newer than the bytes we indexed, so the next reconcile still sees a change and
+            // re-indexes. Stat-after-read could store the new mtime over old trigrams and miss it.
+            let (size, mtime_ns) = stat(path);
             let Ok(bytes) = std::fs::read(path) else {
                 // Unreadable now (perhaps deleted between event and handling): tombstone if known.
                 if let Some(&id) = self.path_to_id.get(path) {
@@ -107,14 +112,9 @@ impl Index {
                 }
                 continue;
             };
-            let (size, mtime_ns) = stat(path);
             let id = self.intern(path, size, mtime_ns);
-            if !is_binary_from_start(&bytes) {
-                let mut seen = FxHashSet::default();
-                trigram::for_each(&bytes, |t| {
-                    seen.insert(t);
-                });
-                for t in seen {
+            if collect_trigrams(&bytes, &mut seen) {
+                for &t in &seen {
                     self.postings
                         .entry(trigram::pack(t))
                         .or_default()
@@ -186,14 +186,19 @@ impl Index {
             .collect()
     }
 
-    /// File/dir name lookup (fd/find-style): live paths whose string contains `needle`.
+    /// File/dir name lookup (fd/find-style): live paths whose string contains `needle`. Sorted before
+    /// truncation so the result is deterministic and `limit` keeps a stable (path-ordered) prefix
+    /// rather than an arbitrary subset of entry-insertion order.
     pub fn find(&self, needle: &str, limit: usize) -> Vec<&Path> {
-        self.entries
+        let mut hits: Vec<&Path> = self
+            .entries
             .iter()
             .filter(|e| e.live && e.path.to_string_lossy().contains(needle))
             .map(|e| e.path.as_path())
-            .take(limit)
-            .collect()
+            .collect();
+        hits.sort_unstable();
+        hits.truncate(limit);
+        hits
     }
 
     /// Approximate resident size of the posting lists (serialized roaring bytes), for status.
@@ -214,11 +219,13 @@ impl Index {
                 .get(&trigram::pack(*t))
                 .cloned()
                 .unwrap_or_default(),
+            // An empty AND is the identity "match all", not "match nothing" — guard the soundness
+            // invariant even though `Query::for_pattern` never builds an empty And/Or today.
             Query::And(qs) => qs
                 .iter()
                 .map(|q| self.eval(q))
                 .reduce(|a, b| a & b)
-                .unwrap_or_default(),
+                .unwrap_or_else(|| self.all_ids()),
             Query::Or(qs) => qs
                 .iter()
                 .map(|q| self.eval(q))
@@ -293,6 +300,7 @@ impl Index {
             });
         }
         let np = read_u64(&mut r)? as usize;
+        let n_entries = entries.len() as u32;
         let mut postings = FxHashMap::default();
         for _ in 0..np {
             let key = read_u32(&mut r)?;
@@ -300,6 +308,11 @@ impl Index {
             let mut bb = vec![0u8; blen];
             r.read_exact(&mut bb)?;
             let bm = RoaringBitmap::deserialize_from(&bb[..])?;
+            // A posting referencing a file id past the entries table means a corrupt or foreign
+            // snapshot; reject it so a query can't panic indexing `entries[id]` (caller rebuilds).
+            if bm.max().is_some_and(|m| m >= n_entries) {
+                bail!("snapshot posting references out-of-range file id");
+            }
             postings.insert(key, bm);
         }
         Ok(Index {
@@ -357,31 +370,35 @@ fn index_files(
         .map(|_| Mutex::new(FxHashMap::default()))
         .collect();
 
+    // Per-worker scratch reused across files: the distinct-trigram set and the per-shard grouping
+    // buffers (avoids allocating 256 Vecs per file across the whole tree).
+    let init = || {
+        (
+            FxHashSet::<Trigram>::default(),
+            vec![Vec::<u32>::new(); SHARDS],
+        )
+    };
     let metas: Vec<(u64, u64)> = paths
         .par_iter()
         .enumerate()
-        .map_init(FxHashSet::<Trigram>::default, |seen, (id, path)| {
+        .map_init(init, |(seen, by_shard), (id, path)| {
             progress.fetch_add(1, Ordering::Relaxed);
             let id = id as u32;
             let (size, mtime_ns) = stat(path);
             if let Ok(bytes) = std::fs::read(path)
-                && !is_binary_from_start(&bytes)
+                && collect_trigrams(&bytes, seen)
             {
-                seen.clear();
-                trigram::for_each(&bytes, |t| {
-                    seen.insert(t);
-                });
-                let mut by_shard: Vec<Vec<u32>> = vec![Vec::new(); SHARDS];
+                by_shard.iter_mut().for_each(Vec::clear);
                 for &t in seen.iter() {
                     let key = trigram::pack(t);
                     by_shard[(key as usize) & (SHARDS - 1)].push(key);
                 }
-                for (s, keys) in by_shard.into_iter().enumerate() {
+                for (s, keys) in by_shard.iter().enumerate() {
                     if keys.is_empty() {
                         continue;
                     }
                     let mut g = shards[s].lock().unwrap();
-                    for key in keys {
+                    for &key in keys {
                         g.entry(key).or_default().insert(id);
                     }
                 }
@@ -416,6 +433,20 @@ fn stat(path: &Path) -> (u64, u64) {
 /// entirely in a recursive search, so giving them no postings is sound (see [`BINARY_SNIFF_BYTES`]).
 fn is_binary_from_start(bytes: &[u8]) -> bool {
     memchr::memchr(0, &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)]).is_some()
+}
+
+/// Fill `seen` with the distinct trigrams of `bytes`, returning whether the file should be indexed.
+/// Binary-from-start files get no postings (the one place this decision is made, shared by the cold
+/// build and incremental updates so they can't drift).
+fn collect_trigrams(bytes: &[u8], seen: &mut FxHashSet<Trigram>) -> bool {
+    if is_binary_from_start(bytes) {
+        return false;
+    }
+    seen.clear();
+    trigram::for_each(bytes, |t| {
+        seen.insert(t);
+    });
+    true
 }
 
 #[cfg(test)]

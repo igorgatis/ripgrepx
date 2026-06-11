@@ -158,36 +158,26 @@ fn find_cmd(rest: &[String]) -> ExitCode {
 
 fn content_cmd(args: &[String]) -> ExitCode {
     let mut opts = SearchOptions::default();
-    let mut pattern: Option<String> = None;
-    let mut path: Option<String> = None;
+    let mut positionals: Vec<&str> = Vec::new();
+    let mut only_positional = false; // set by `--`
     let mut i = 0;
 
     while i < args.len() {
         let a = &args[i];
-        let is_flag = pattern.is_none() && a.starts_with('-') && a != "-";
-        if !is_flag {
-            if pattern.is_none() {
-                pattern = Some(a.clone());
-            } else if path.is_none() {
-                path = Some(a.clone());
-            } else {
-                eprintln!("rgx: unexpected extra argument {a:?}");
-                return ExitCode::from(2);
-            }
+        // A flag is recognized anywhere (like rg), until `--`. A leading-`-` token after `--`, or
+        // the lone `-`, is positional. (A pattern that starts with `-` must follow `--`.)
+        if only_positional || !a.starts_with('-') || a == "-" {
+            positionals.push(a);
             i += 1;
             continue;
         }
         match a.as_str() {
+            "--" => only_positional = true,
             "-i" | "--ignore-case" => opts.case_insensitive = true,
             "-s" | "--case-sensitive" => opts.case_insensitive = false,
             "-w" | "--word-regexp" => opts.word = true,
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
-            "--" => {
-                pattern = args.get(i + 1).cloned();
-                path = args.get(i + 2).cloned();
-                break;
-            }
             ctx if ctx.starts_with("-A") || ctx.starts_with("-B") || ctx.starts_with("-C") => {
                 let (n, consumed) = match context_value(args, i) {
                     Some(v) => v,
@@ -215,11 +205,17 @@ fn content_cmd(args: &[String]) -> ExitCode {
         i += 1;
     }
 
-    let Some(pattern) = pattern else {
+    let Some((pattern, rest)) = positionals.split_first() else {
         usage();
         return ExitCode::from(2);
     };
-    let root = resolve_root(path.as_deref());
+    let pattern = pattern.to_string();
+    let path = rest.first().copied();
+    if rest.len() > 1 {
+        eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
+        return ExitCode::from(2);
+    }
+    let root = resolve_root(path);
     let mut stdout = std::io::stdout();
 
     // Fallback queries (no usable trigram) make every file a candidate, so the daemon can't narrow
@@ -254,11 +250,19 @@ fn content_cmd(args: &[String]) -> ExitCode {
     match client::request_stream(&root, &Request::Search { opts, pattern }, &mut stdout) {
         Ok(0) => ExitCode::from(1),
         Ok(_) => ExitCode::SUCCESS,
+        // A closed stdout (e.g. `rgx pat | head`) is a clean exit for a grep-like tool, not an error.
+        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("rgx: {e}");
             ExitCode::from(2)
         }
     }
+}
+
+/// True if `e` is (or wraps) a broken-pipe I/O error.
+fn is_broken_pipe(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 /// Parse `-A5` (attached) or `-A 5` (separate); returns (value, args_consumed).

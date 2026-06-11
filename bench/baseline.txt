@@ -1,31 +1,31 @@
 # rgx vs rg benchmark baseline (2026-06-11)
-# host: 12cpu/24GB  rg 15.1.0
+# host: 12cpu/24GB  macOS  rg 15.1.0  hyperfine (warmup 1, median of 5)
+# warm daemon (index resident); reproduce with: RGX=target/release/rgx bench/bench.sh <repo> <pat>...
+# `.*` over linux (0.79x) is the documented degenerate "print every line" residual; see
+# docs/index-and-storage.md section 9b. Every realistic query is faster.
 
-### lucene
-repo=/Users/igorgatis/depot/lucene
-root=/Users/igorgatis/depot/lucene ready=true files=7426 trigrams=203276 snapshot=/Users/igorgatis/.cache/rgx/8a0b8bf402d8b868/index.bin 
+### lucene  (7.4k files, index 19.2 MB)
 pattern                                          rg(ms)    rgx(ms)   speedup verdict
-IndexWriter                                       103.7       17.0     6.11x OK
-TokenStream|IndexWriter|BytesRef                  108.1       42.3     2.56x OK
-MergePolicy                                       102.3        8.1    12.58x OK
-\w+Exception                                      114.5       76.7     1.49x OK
-.*                                                135.0      137.1     0.98x OK
+IndexWriter                                       104.1       17.1     6.08x OK
+MergePolicy                                       101.7        8.3    12.25x OK
+TokenStream|IndexWriter|BytesRef                  107.5       42.6     2.52x OK
 
-### vscode
-repo=/Users/igorgatis/depot/vscode
-root=/Users/igorgatis/depot/vscode ready=true files=15116 trigrams=416404 snapshot=/Users/igorgatis/.cache/rgx/32b642b1ab1c16f4/index.bin 
+### vscode  (15.1k files, index 41.5 MB)
 pattern                                          rg(ms)    rgx(ms)   speedup verdict
-registerCommand                                   198.3       14.0    14.17x OK
-IDisposable|registerCommand|createDecorator       201.9       35.6     5.68x OK
-createDecorator                                   197.0       12.5    15.72x OK
-\w+Service                                        211.6      112.4     1.88x OK
-### linux
-repo=/Users/igorgatis/depot/linux
-root=/Users/igorgatis/depot/linux ready=true files=93596 trigrams=549600 snapshot=/Users/igorgatis/.cache/rgx/83cdeec83b752f66/index.bin 
+registerCommand                                   200.0       13.9    14.33x OK
+createDecorator                                   199.4       12.5    15.97x OK
+IDisposable|registerCommand|createDecorator       203.0       35.4     5.73x OK
+
+### kubernetes  (30.2k files, index 46.6 MB)
 pattern                                          rg(ms)    rgx(ms)   speedup verdict
-EXPORT_SYMBOL_GPL                                2639.2       53.1    49.70x OK
-spin_lock_irqsave                                2972.9       56.4    52.67x OK
-task_struct|spin_lock|mutex_lock                 2942.8      173.3    16.98x OK
-struct \w+_ops                                 2838.9      208.2    13.64x OK
-devm_kzalloc                                     2671.1       76.2    35.07x OK
-.*                                               1812.6     1817.5     1.00x OK
+PodSpec                                           423.5       15.5    27.37x OK
+kubelet                                           420.7       35.7    11.77x OK
+DaemonSet|StatefulSet|ReplicaSet                  426.0       18.4    23.12x OK
+Po (fallback, in-process)                         432.5      445.8     0.97x OK
+.* (fallback, in-process)                         531.1      563.5     0.94x OK
+
+### linux  (93.6k files, index 197.9 MB)
+pattern                                          rg(ms)    rgx(ms)   speedup verdict
+EXPORT_SYMBOL_GPL                                1422.3       54.2    26.26x OK
+task_struct|spin_lock|mutex_lock                 1977.7      174.7    11.32x OK
+.* (fallback, match-everything)                  1844.8     2336.0     0.79x REGRESSION (degenerate; documented)

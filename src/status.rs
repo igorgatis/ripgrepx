@@ -62,11 +62,13 @@ impl Status<'_> {
     }
 }
 
-/// Human-friendly counts: `758`, `93.6k`, `1.5m` (one decimal, lowercase k/m suffixes).
+/// Human-friendly counts: `758`, `93.6k`, `1.5m` (one decimal, lowercase k/m suffixes). The `< 999.95`
+/// guards keep a value that would round to `1000.0` at one decimal from showing `1000.0k` instead of
+/// rolling over to `1.0m`.
 pub fn human_count(n: u64) -> String {
     if n < 1_000 {
         n.to_string()
-    } else if n < 1_000_000 {
+    } else if n as f64 / 1_000.0 < 999.95 {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
         format!("{:.1}m", n as f64 / 1_000_000.0)
@@ -77,7 +79,9 @@ pub fn human_bytes(n: u64) -> String {
     const U: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut v = n as f64;
     let mut i = 0;
-    while v >= 1024.0 && i < U.len() - 1 {
+    // Promote before a value that would render as `1024.0` at one decimal (e.g. 1048575 -> 1.0 MB,
+    // not 1024.0 KB).
+    while v >= 1023.95 && i < U.len() - 1 {
         v /= 1024.0;
         i += 1;
     }

@@ -76,12 +76,13 @@ pub fn search_streaming(
     for batch in paths.chunks(BATCH) {
         let chunks: Vec<Vec<u8>> = batch
             .par_iter()
-            .map(|path| {
-                let mut searcher = build_searcher(opts);
-                let mut buf = Vec::new();
-                search_one(&mut searcher, &matcher, path, &mut buf);
-                buf
-            })
+            .map_init(
+                || (build_searcher(opts), Vec::new()),
+                |(searcher, buf), path| {
+                    search_one(searcher, &matcher, path, buf);
+                    std::mem::take(buf)
+                },
+            )
             .collect();
         for c in &chunks {
             emit(c)?;

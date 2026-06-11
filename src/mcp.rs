@@ -2,12 +2,15 @@
 //!
 //! Speaks JSON-RPC 2.0 over stdio (newline-delimited), implementing the handshake plus three tools:
 //! `content_search`, `file_search`, and `status`. Results come back as ripgrep-style text (the shape
-//! models already know), per `docs/mcp.md`. Hand-rolled to avoid a heavy MCP dependency for now.
+//! models already know), per `docs/mcp.md`. Parsing uses `serde_json` so UTF-8, escapes, and key
+//! order are handled correctly.
 
 use std::io::{BufRead, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use serde_json::{Value, json};
 
 use crate::client;
 use crate::confirm::SearchOptions;
@@ -25,11 +28,10 @@ pub fn run(root: PathBuf) -> Result<()> {
         if stdin.lock().read_line(&mut line)? == 0 {
             break;
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if line.trim().is_empty() {
             continue;
         }
-        if let Some(resp) = handle_message(trimmed, &root) {
+        if let Some(resp) = handle_message(line.trim(), &root) {
             writeln!(stdout, "{resp}")?;
             stdout.flush()?;
         }
@@ -37,166 +39,167 @@ pub fn run(root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Handle one JSON-RPC message; returns a response line, or `None` for notifications.
-fn handle_message(msg: &str, root: &std::path::Path) -> Option<String> {
-    let id = extract_raw(msg, "\"id\"");
-    let method = extract_string(msg, "\"method\"")?;
-    match method.as_str() {
+/// Handle one JSON-RPC message; returns a response line, or `None` for notifications / unparseable
+/// input.
+fn handle_message(msg: &str, root: &Path) -> Option<String> {
+    let v: Value = serde_json::from_str(msg).ok()?;
+    let id = v.get("id").cloned().unwrap_or(Value::Null);
+    let method = v.get("method")?.as_str()?;
+    match method {
         "initialize" => Some(result(
-            &id?,
-            &format!(
-                r#"{{"protocolVersion":"{PROTOCOL_VERSION}","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"rgx","version":"{}"}}}}"#,
-                env!("CARGO_PKG_VERSION")
-            ),
+            id,
+            json!({
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "rgx", "version": env!("CARGO_PKG_VERSION")},
+            }),
         )),
-        "tools/list" => Some(result(&id?, TOOLS)),
-        "tools/call" => Some(handle_tool_call(&id?, msg, root)),
-        "notifications/initialized" | "notifications/cancelled" => None,
-        _ => id.map(|id| error(&id, -32601, "method not found")),
+        "tools/list" => Some(result(id, tools())),
+        "tools/call" => Some(handle_tool_call(id, &v, root)),
+        m if m.starts_with("notifications/") => None,
+        _ => {
+            if id.is_null() {
+                None
+            } else {
+                Some(error(id, -32601, "method not found"))
+            }
+        }
     }
 }
 
-fn handle_tool_call(id: &str, msg: &str, root: &std::path::Path) -> String {
-    let name = match extract_string(msg, "\"name\"") {
-        Some(n) => n,
-        None => return error(id, -32602, "missing tool name"),
-    };
-    let text = match name.as_str() {
-        "content_search" => {
-            let Some(pattern) = extract_string(msg, "\"pattern\"") else {
-                return error(id, -32602, "missing pattern");
+fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
+    let params = msg.get("params");
+    let name = params.and_then(|p| p.get("name")).and_then(Value::as_str);
+    let args = params.and_then(|p| p.get("arguments"));
+    match name {
+        Some("content_search") => {
+            let Some(pattern) = args.and_then(|a| a.get("pattern")).and_then(Value::as_str) else {
+                return error(id, -32602, "missing required argument 'pattern'");
             };
             let opts = SearchOptions {
-                case_insensitive: extract_bool(msg, "\"case_insensitive\""),
+                case_insensitive: arg_bool(args, "case_insensitive"),
+                word: arg_bool(args, "word"),
+                fixed_strings: arg_bool(args, "fixed_strings"),
+                multi_line: arg_bool(args, "multi_line"),
                 ..Default::default()
             };
-            run_request(root, &Request::Search { opts, pattern })
-        }
-        "file_search" => {
-            let Some(needle) =
-                extract_string(msg, "\"name\"").filter(|_| msg.contains("\"arguments\""))
-            else {
-                return error(id, -32602, "missing name");
-            };
-            // `name` here is the tool name; the query arg is `query`.
-            let query = extract_string(msg, "\"query\"").unwrap_or(needle);
-            run_request(
-                root,
-                &Request::Find {
-                    needle: query,
-                    limit: 200,
-                },
+            tool_result(
+                id,
+                &run_request(
+                    root,
+                    &Request::Search {
+                        opts,
+                        pattern: pattern.to_string(),
+                    },
+                ),
             )
         }
-        "status" => run_request(root, &Request::Status),
-        other => return error(id, -32602, &format!("unknown tool {other}")),
-    };
-    tool_result(id, &text)
+        Some("file_search") => {
+            let Some(query) = args.and_then(|a| a.get("query")).and_then(Value::as_str) else {
+                return error(id, -32602, "missing required argument 'query'");
+            };
+            tool_result(
+                id,
+                &run_request(
+                    root,
+                    &Request::Find {
+                        needle: query.to_string(),
+                        limit: 200,
+                    },
+                ),
+            )
+        }
+        Some("status") => tool_result(id, &run_request(root, &Request::Status)),
+        Some(other) => error(id, -32602, &format!("unknown tool {other:?}")),
+        None => error(id, -32602, "missing tool name"),
+    }
 }
 
-fn run_request(root: &std::path::Path, req: &Request) -> String {
+fn arg_bool(args: Option<&Value>, key: &str) -> bool {
+    args.and_then(|a| a.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn run_request(root: &Path, req: &Request) -> String {
     match client::request(root, req) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => format!("error: {e}"),
     }
 }
 
-const TOOLS: &str = r#"{"tools":[
-{"name":"content_search","description":"Search file contents with a regex (ripgrep semantics, accelerated by an index). Returns path:line:text.","inputSchema":{"type":"object","properties":{"pattern":{"type":"string"},"case_insensitive":{"type":"boolean"}},"required":["pattern"]}},
-{"name":"file_search","description":"Find files/directories by name or path substring (fd/find-style). Returns one path per line.","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
-{"name":"status","description":"Report index health: whether it is ready, file and trigram counts.","inputSchema":{"type":"object","properties":{}}}
-]}"#;
-
-// --- tiny JSON helpers (sufficient for the well-formed messages MCP clients send) ---
-
-fn result(id: &str, result_json: &str) -> String {
-    format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{result_json}}}"#)
-}
-
-fn error(id: &str, code: i32, message: &str) -> String {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"error":{{"code":{code},"message":{}}}}}"#,
-        json_string(message)
-    )
-}
-
-fn tool_result(id: &str, text: &str) -> String {
-    format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"result":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
-        json_string(text)
-    )
-}
-
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Extract a string value for `key` (e.g. `"method"`) from a flat JSON object. Minimal and
-/// tolerant: finds the key, the following `:`, and the next quoted string, unescaping basic escapes.
-fn extract_string(msg: &str, key: &str) -> Option<String> {
-    let start = msg.find(key)? + key.len();
-    let rest = &msg[start..];
-    let colon = rest.find(':')?;
-    let after = &rest[colon + 1..];
-    let q = after.find('"')?;
-    let bytes = &after.as_bytes()[q + 1..];
-    let mut out = String::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => return Some(out),
-            b'\\' if i + 1 < bytes.len() => {
-                i += 1;
-                out.push(match bytes[i] {
-                    b'n' => '\n',
-                    b't' => '\t',
-                    b'r' => '\r',
-                    other => other as char,
-                });
+fn tools() -> Value {
+    json!({"tools": [
+        {
+            "name": "content_search",
+            "description": "Search file contents with a regex (ripgrep semantics, accelerated by an index). Returns path:line:text.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "case_insensitive": {"type": "boolean"},
+                    "word": {"type": "boolean", "description": "match only whole words (-w)"},
+                    "fixed_strings": {"type": "boolean", "description": "treat pattern as a literal (-F)"},
+                    "multi_line": {"type": "boolean"}
+                },
+                "required": ["pattern"]
             }
-            b => out.push(b as char),
+        },
+        {
+            "name": "file_search",
+            "description": "Find files/directories by name or path substring (fd/find-style). Returns one path per line.",
+            "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+        },
+        {
+            "name": "status",
+            "description": "Report index health: whether it is ready, file and trigram counts.",
+            "inputSchema": {"type": "object", "properties": {}}
         }
-        i += 1;
-    }
-    None
+    ]})
 }
 
-/// Extract the raw token after `key` (used for the JSON-RPC id, which may be a number or string).
-fn extract_raw(msg: &str, key: &str) -> Option<String> {
-    let start = msg.find(key)? + key.len();
-    let rest = &msg[start..];
-    let colon = rest.find(':')?;
-    let after = rest[colon + 1..].trim_start();
-    if let Some(stripped) = after.strip_prefix('"') {
-        let end = stripped.find('"')?;
-        Some(format!("\"{}\"", &stripped[..end]))
-    } else {
-        let end = after.find([',', '}']).unwrap_or(after.len());
-        Some(after[..end].trim().to_string())
-    }
+fn result(id: Value, result: Value) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
 
-fn extract_bool(msg: &str, key: &str) -> bool {
-    msg.find(key)
-        .and_then(|p| {
-            msg[p + key.len()..]
-                .find(':')
-                .map(|c| p + key.len() + c + 1)
-        })
-        .map(|i| msg[i..].trim_start().starts_with("true"))
-        .unwrap_or(false)
+fn error(id: Value, code: i32, message: &str) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
+}
+
+fn tool_result(id: Value, text: &str) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "result": {"content": [{"type": "text", "text": text}]}})
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_and_unicode_pattern_parse() {
+        let resp = handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            Path::new("."),
+        )
+        .unwrap();
+        assert!(resp.contains("\"protocolVersion\""));
+        // A non-ASCII pattern must round-trip through the parser unmolested.
+        let v: Value = serde_json::from_str(
+            r#"{"params":{"name":"content_search","arguments":{"pattern":"café"}}}"#,
+        )
+        .unwrap();
+        let pat = v["params"]["arguments"]["pattern"].as_str().unwrap();
+        assert_eq!(pat, "café");
+    }
+
+    #[test]
+    fn notifications_get_no_response() {
+        assert!(
+            handle_message(
+                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                Path::new(".")
+            )
+            .is_none()
+        );
+    }
 }
