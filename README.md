@@ -52,11 +52,14 @@ or as a **CLI**. After installing the binary above, one command wires it into yo
 ```sh
 rgx --agent install            # auto-detect installed agents and install the rgx bundle for each
 rgx --agent install codex      # or name one or more: claude, codex, cursor, gemini, vscode
+rgx --agent install --dry-run  # preview the exact changes; --yes (-y) applies without prompting
 rgx --agent list               # show detected agents + install status
 rgx --agent uninstall          # remove exactly what install wrote
 ```
 
-`install` is deliberately non-intrusive: it writes **only where rgx owns the namespace** (Claude's
+`install` and `uninstall` **print the exact changes and ask before touching anything** (`--yes` skips
+the prompt, and is required when stdin isn't a TTY; `--dry-run` only previews). `install` is
+deliberately non-intrusive: it writes **only where rgx owns the namespace** (Claude's
 skill dir, a Gemini extension), and for shared files it edits **idempotently** — a removable marked
 block in `AGENTS.md` / `copilot-instructions.md`, or a merged `"rgx"` key in `.cursor/mcp.json` /
 `.vscode/mcp.json`. It never blind-appends to a file you authored, and `uninstall` reverses it

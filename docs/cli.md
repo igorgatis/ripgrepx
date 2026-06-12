@@ -90,11 +90,13 @@ the indexing itself.
 | `rgx --agent list` | Show detected agents and install status. |
 | `rgx --agent --help` | The agent subcommands and the install model. |
 
-`TARGET` is one of `claude`, `codex`, `cursor`, `gemini`, `vscode`. `install` writes only where rgx
-owns the namespace (Claude skill dir, Gemini extension) and edits shared files idempotently — a
-removable marked block, or a merged `"rgx"` key — never a blind append; `uninstall` reverses it. MCP
-registration via a host's own CLI (`claude`/`codex mcp add`) is printed for you to run, not executed.
-See [`mcp.md`](mcp.md) for the per-agent bundle table.
+`TARGET` is one of `claude`, `codex`, `cursor`, `gemini`, `vscode`. Both `install` and `uninstall`
+**print the exact changes first and ask before touching anything**; `--yes` (`-y`) applies without
+prompting (required when stdin is not a TTY, e.g. in a script), and `--dry-run` (`-n`) only previews.
+`install` writes only where rgx owns the namespace (Claude skill dir, Gemini extension) and edits
+shared files idempotently — a removable marked block, or a merged `"rgx"` key — never a blind append;
+`uninstall` reverses it. MCP registration via a host's own CLI (`claude`/`codex mcp add`) is printed
+for you to run, not executed. See [`mcp.md`](mcp.md) for the per-agent bundle table.
 
 ### Searching for a literal that looks like a flag
 

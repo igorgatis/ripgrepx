@@ -129,7 +129,9 @@ rgx --agent — integrate rgx with AI coding agents.
   rgx --agent list                      show detected agents and install status
 
 TARGET (omit to auto-detect installed agents): claude  codex  cursor  gemini  vscode
-Scope: --user (default for claude/codex/gemini) or --project (default for cursor/vscode).
+Scope:   --user (default for claude/codex/gemini) or --project (default for cursor/vscode).
+Confirm: install/uninstall print the exact changes and ask before touching anything. --yes (-y)
+         applies without prompting (required when stdin is not a TTY); --dry-run (-n) only previews.
 
 install writes only where rgx owns the namespace — Claude skill dir, a Gemini extension — or edits
 shared files idempotently (a removable marked block in AGENTS.md / copilot-instructions, a merged

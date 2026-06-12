@@ -6,6 +6,7 @@
 //! CLI is printed, not run. The skill text is version-controlled in `assets/skill.md` and embedded at
 //! build time so the installed copy can't drift from the binary (see `CLAUDE.md`).
 
+use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -108,9 +109,30 @@ impl Env {
     }
 }
 
-struct Report {
-    wrote: Vec<PathBuf>,
-    notes: Vec<String>,
+/// A single filesystem change an install will make. Built up front so the plan can be previewed and
+/// confirmed before anything is written; `Note` is a manual step printed for the user (e.g. an
+/// `mcp add` command rgx won't run itself).
+enum Action {
+    Write {
+        path: PathBuf,
+        contents: String,
+    },
+    MergeJson {
+        path: PathBuf,
+        root_key: &'static str,
+    },
+    Block {
+        path: PathBuf,
+        body: String,
+    },
+    Note(String),
+}
+
+struct Opts {
+    targets: Vec<Target>,
+    scope: Option<Scope>,
+    yes: bool,
+    dry_run: bool,
 }
 
 /// `rgx --agent skill`: print the skill document (no side effects).
@@ -118,38 +140,95 @@ pub fn print_skill() {
     print!("{SKILL_MD}");
 }
 
-/// `rgx --agent install [targets] [--user|--project]`.
+/// `rgx --agent install [targets] [--user|--project] [--dry-run|--yes]`.
 pub fn install_cli(args: &[String]) -> Result<()> {
-    let (targets, scope) = parse_args(args)?;
+    let opts = parse_args(args)?;
     let env = Env::from_system()?;
-    let targets = resolve_targets(&targets, &env)?;
+    let targets = resolve_targets(&opts.targets, &env)?;
+    let mut plan = Vec::new();
     for t in targets {
-        let sc = resolve_scope(t, scope)?;
-        let r = install_target(&env, t, sc)?;
-        print_report(t, sc, &r);
+        let sc = resolve_scope(t, opts.scope)?;
+        plan.push((t, sc, plan_target(&env, t, sc)));
+    }
+
+    println!("rgx --agent install will make these changes:");
+    for (t, sc, actions) in &plan {
+        println!("\n{} ({}):", t.label(), sc.label());
+        for a in actions {
+            println!("  {}", describe(&env, a));
+        }
+    }
+
+    if opts.dry_run {
+        println!("\n(dry run — nothing written)");
+        return Ok(());
+    }
+    if !opts.yes && !confirm_proceed("\nApply these changes?")? {
+        println!("aborted; nothing written");
+        return Ok(());
+    }
+
+    println!();
+    for (t, sc, actions) in plan {
+        println!("{} ({}):", t.label(), sc.label());
+        for a in actions {
+            match apply(a)? {
+                Done::Wrote(p) => println!("  wrote   {}", p.display()),
+                Done::Manual(n) => println!("  {n}"),
+            }
+        }
     }
     Ok(())
 }
 
-/// `rgx --agent uninstall [targets] [--user|--project]`.
+/// `rgx --agent uninstall [targets] [--user|--project] [--dry-run|--yes]`.
 pub fn uninstall_cli(args: &[String]) -> Result<()> {
-    let (targets, scope) = parse_args(args)?;
+    let opts = parse_args(args)?;
     let env = Env::from_system()?;
-    let targets = if targets.is_empty() {
+    let targets = if opts.targets.is_empty() {
         Target::ALL.to_vec()
     } else {
-        targets
+        opts.targets
     };
+    let mut plan = Vec::new();
     for t in targets {
-        let sc = resolve_scope(t, scope)?;
+        let sc = resolve_scope(t, opts.scope)?;
+        plan.push((t, sc, pending_removals(&env, t, sc)));
+    }
+    if plan.iter().all(|(_, _, items)| items.is_empty()) {
+        println!("nothing installed for the selected agents");
+        return Ok(());
+    }
+
+    println!("rgx --agent uninstall will remove:");
+    for (t, sc, items) in &plan {
+        if items.is_empty() {
+            continue;
+        }
+        println!("\n{} ({}):", t.label(), sc.label());
+        for item in items {
+            println!("  {item}");
+        }
+    }
+
+    if opts.dry_run {
+        println!("\n(dry run — nothing removed)");
+        return Ok(());
+    }
+    if !opts.yes && !confirm_proceed("\nRemove these?")? {
+        println!("aborted; nothing removed");
+        return Ok(());
+    }
+
+    println!();
+    for (t, sc, items) in plan {
+        if items.is_empty() {
+            continue;
+        }
         let removed = uninstall_target(&env, t, sc)?;
-        if removed.is_empty() {
-            println!("{} ({}): nothing installed", t.label(), sc.label());
-        } else {
-            println!("{} ({}):", t.label(), sc.label());
-            for line in removed {
-                println!("  removed {line}");
-            }
+        println!("{} ({}):", t.label(), sc.label());
+        for line in removed {
+            println!("  removed {line}");
         }
     }
     Ok(())
@@ -171,20 +250,26 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-fn parse_args(args: &[String]) -> Result<(Vec<Target>, Option<Scope>)> {
-    let mut targets = Vec::new();
-    let mut scope = None;
+fn parse_args(args: &[String]) -> Result<Opts> {
+    let mut opts = Opts {
+        targets: Vec::new(),
+        scope: None,
+        yes: false,
+        dry_run: false,
+    };
     for a in args {
         match a.as_str() {
-            "--user" => scope = Some(Scope::User),
-            "--project" | "--repo" => scope = Some(Scope::Project),
+            "--user" => opts.scope = Some(Scope::User),
+            "--project" | "--repo" => opts.scope = Some(Scope::Project),
+            "--yes" | "-y" => opts.yes = true,
+            "--dry-run" | "-n" => opts.dry_run = true,
             s if s.starts_with('-') => bail!("unknown flag {s:?}"),
-            s => targets.push(Target::parse(s).with_context(|| {
+            s => opts.targets.push(Target::parse(s).with_context(|| {
                 format!("unknown target {s:?} (use: claude, codex, cursor, gemini, vscode)")
             })?),
         }
     }
-    Ok((targets, scope))
+    Ok(opts)
 }
 
 fn resolve_scope(t: Target, scope: Option<Scope>) -> Result<Scope> {
@@ -234,93 +319,206 @@ fn is_installed(env: &Env, t: Target, scope: Scope) -> bool {
     }
 }
 
-fn install_target(env: &Env, t: Target, scope: Scope) -> Result<Report> {
+fn plan_target(env: &Env, t: Target, scope: Scope) -> Vec<Action> {
     match t {
-        Target::Claude => install_claude(env, scope),
-        Target::Codex => install_codex(env, scope),
-        Target::Cursor => install_cursor(env),
-        Target::Gemini => install_gemini(env, scope),
-        Target::VsCode => install_vscode(env, scope),
-    }
-}
-
-fn install_claude(env: &Env, scope: Scope) -> Result<Report> {
-    let path = claude_skill(env, scope);
-    write_file(&path, SKILL_MD)?;
-    let cmd = match scope {
-        Scope::User => "claude mcp add rgx -- rgx --agent mcp",
-        Scope::Project => "claude mcp add --scope project rgx -- rgx --agent mcp",
-    };
-    Ok(Report {
-        wrote: vec![path],
-        notes: vec![format!("register MCP: {cmd}")],
-    })
-}
-
-fn install_codex(env: &Env, scope: Scope) -> Result<Report> {
-    let path = codex_agents(env, scope);
-    upsert_block(&path, skill_body())?;
-    Ok(Report {
-        wrote: vec![path],
-        notes: vec!["register MCP: codex mcp add rgx -- rgx --agent mcp".to_string()],
-    })
-}
-
-fn install_cursor(env: &Env) -> Result<Report> {
-    let rule = env.cwd.join(".cursor/rules/rgx.mdc");
-    let body = format!(
-        "---\ndescription: {CURSOR_DESC}\nalwaysApply: true\n---\n\n{}",
-        skill_body()
-    );
-    write_file(&rule, &body)?;
-    let mcp = env.cwd.join(".cursor/mcp.json");
-    merge_mcp_json(&mcp, "mcpServers")?;
-    Ok(Report {
-        wrote: vec![rule, mcp],
-        notes: Vec::new(),
-    })
-}
-
-fn install_gemini(env: &Env, scope: Scope) -> Result<Report> {
-    let dir = gemini_dir(env, scope);
-    let manifest = json!({
-        "name": "rgx",
-        "version": VERSION,
-        "mcpServers": { "rgx": rgx_server() },
-        "contextFileName": "GEMINI.md",
-    });
-    let manifest_path = dir.join("gemini-extension.json");
-    write_file(&manifest_path, &format!("{}\n", to_pretty(&manifest)?))?;
-    let ctx = dir.join("GEMINI.md");
-    write_file(&ctx, skill_body())?;
-    Ok(Report {
-        wrote: vec![manifest_path, ctx],
-        notes: Vec::new(),
-    })
-}
-
-fn install_vscode(env: &Env, scope: Scope) -> Result<Report> {
-    match scope {
-        Scope::Project => {
-            let mcp = env.cwd.join(".vscode/mcp.json");
-            merge_mcp_json(&mcp, "servers")?;
-            let instr = env.cwd.join(".github/copilot-instructions.md");
-            upsert_block(&instr, skill_body())?;
-            Ok(Report {
-                wrote: vec![mcp, instr],
-                notes: Vec::new(),
-            })
+        Target::Claude => {
+            let cmd = match scope {
+                Scope::User => "claude mcp add rgx -- rgx --agent mcp",
+                Scope::Project => "claude mcp add --scope project rgx -- rgx --agent mcp",
+            };
+            vec![
+                Action::Write {
+                    path: claude_skill(env, scope),
+                    contents: SKILL_MD.to_string(),
+                },
+                Action::Note(format!("register MCP: {cmd}")),
+            ]
         }
-        Scope::User => Ok(Report {
-            wrote: Vec::new(),
-            notes: vec![
-                "register MCP: code --add-mcp \
-                 '{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}'"
-                    .to_string(),
-                "add the skill to your user copilot-instructions in VS Code settings".to_string(),
+        Target::Codex => vec![
+            Action::Block {
+                path: codex_agents(env, scope),
+                body: skill_body().to_string(),
+            },
+            Action::Note("register MCP: codex mcp add rgx -- rgx --agent mcp".to_string()),
+        ],
+        Target::Cursor => vec![
+            Action::Write {
+                path: env.cwd.join(".cursor/rules/rgx.mdc"),
+                contents: format!(
+                    "---\ndescription: {CURSOR_DESC}\nalwaysApply: true\n---\n\n{}",
+                    skill_body()
+                ),
+            },
+            Action::MergeJson {
+                path: env.cwd.join(".cursor/mcp.json"),
+                root_key: "mcpServers",
+            },
+        ],
+        Target::Gemini => {
+            let dir = gemini_dir(env, scope);
+            let manifest = json!({
+                "name": "rgx",
+                "version": VERSION,
+                "mcpServers": { "rgx": rgx_server() },
+                "contextFileName": "GEMINI.md",
+            });
+            vec![
+                Action::Write {
+                    path: dir.join("gemini-extension.json"),
+                    contents: format!("{}\n", to_pretty(&manifest).unwrap_or_default()),
+                },
+                Action::Write {
+                    path: dir.join("GEMINI.md"),
+                    contents: skill_body().to_string(),
+                },
+            ]
+        }
+        Target::VsCode => match scope {
+            Scope::Project => vec![
+                Action::MergeJson {
+                    path: env.cwd.join(".vscode/mcp.json"),
+                    root_key: "servers",
+                },
+                Action::Block {
+                    path: env.cwd.join(".github/copilot-instructions.md"),
+                    body: skill_body().to_string(),
+                },
             ],
-        }),
+            Scope::User => vec![
+                Action::Note(
+                    "register MCP: code --add-mcp \
+                     '{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}'"
+                        .to_string(),
+                ),
+                Action::Note(
+                    "add the skill to your user copilot-instructions in VS Code settings"
+                        .to_string(),
+                ),
+            ],
+        },
     }
+}
+
+enum Done {
+    Wrote(PathBuf),
+    Manual(String),
+}
+
+fn apply(action: Action) -> Result<Done> {
+    match action {
+        Action::Write { path, contents } => {
+            write_file(&path, &contents)?;
+            Ok(Done::Wrote(path))
+        }
+        Action::MergeJson { path, root_key } => {
+            merge_mcp_json(&path, root_key)?;
+            Ok(Done::Wrote(path))
+        }
+        Action::Block { path, body } => {
+            upsert_block(&path, &body)?;
+            Ok(Done::Wrote(path))
+        }
+        Action::Note(n) => Ok(Done::Manual(n)),
+    }
+}
+
+fn describe(env: &Env, action: &Action) -> String {
+    let _ = env;
+    match action {
+        Action::Write { path, .. } => {
+            let verb = if path.is_file() {
+                "overwrite"
+            } else {
+                "create"
+            };
+            format!("{verb} {}", path.display())
+        }
+        Action::MergeJson { path, root_key } => {
+            if path.exists() {
+                format!("add \"rgx\" to {} ({root_key})", path.display())
+            } else {
+                format!("create {} with the \"rgx\" server", path.display())
+            }
+        }
+        Action::Block { path, .. } => {
+            if has_block(path) {
+                format!("update the rgx block in {}", path.display())
+            } else if path.exists() {
+                format!("add an rgx block to {}", path.display())
+            } else {
+                format!("create {}", path.display())
+            }
+        }
+        Action::Note(n) => format!("you then run: {n}"),
+    }
+}
+
+fn pending_removals(env: &Env, t: Target, scope: Scope) -> Vec<String> {
+    let mut items = Vec::new();
+    let file = |p: PathBuf, items: &mut Vec<String>| {
+        if p.is_file() {
+            items.push(p.display().to_string());
+        }
+    };
+    match t {
+        Target::Claude => file(claude_skill(env, scope), &mut items),
+        Target::Gemini => {
+            let dir = gemini_dir(env, scope);
+            if dir.is_dir() {
+                items.push(dir.display().to_string());
+            }
+        }
+        Target::Cursor => {
+            file(env.cwd.join(".cursor/rules/rgx.mdc"), &mut items);
+            if json_has_rgx(&env.cwd.join(".cursor/mcp.json"), "mcpServers") {
+                items.push(format!(
+                    "{} (rgx key)",
+                    env.cwd.join(".cursor/mcp.json").display()
+                ));
+            }
+        }
+        Target::Codex => {
+            let p = codex_agents(env, scope);
+            if has_block(&p) {
+                items.push(format!("{} (rgx block)", p.display()));
+            }
+        }
+        Target::VsCode => {
+            if json_has_rgx(&env.cwd.join(".vscode/mcp.json"), "servers") {
+                items.push(format!(
+                    "{} (rgx key)",
+                    env.cwd.join(".vscode/mcp.json").display()
+                ));
+            }
+            let instr = env.cwd.join(".github/copilot-instructions.md");
+            if has_block(&instr) {
+                items.push(format!("{} (rgx block)", instr.display()));
+            }
+        }
+    }
+    items
+}
+
+fn confirm_proceed(prompt: &str) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        bail!("not a terminal; re-run with --yes to apply, or --dry-run to preview");
+    }
+    print!("{prompt} [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+#[cfg(test)]
+fn install_target(env: &Env, t: Target, scope: Scope) -> Result<()> {
+    for action in plan_target(env, t, scope) {
+        apply(action)?;
+    }
+    Ok(())
 }
 
 fn uninstall_target(env: &Env, t: Target, scope: Scope) -> Result<Vec<String>> {
@@ -381,16 +579,6 @@ fn skill_body() -> &'static str {
         return rest[idx + 5..].trim_start_matches('\n');
     }
     SKILL_MD
-}
-
-fn print_report(t: Target, scope: Scope, r: &Report) {
-    println!("{} ({}):", t.label(), scope.label());
-    for p in &r.wrote {
-        println!("  wrote   {}", p.display());
-    }
-    for note in &r.notes {
-        println!("  {note}");
-    }
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {

@@ -18,9 +18,11 @@ rgx --agent list               # detected agents + install status
 rgx --agent uninstall          # remove exactly what install wrote
 ```
 
-`install` writes only where rgx owns the namespace, and edits shared files idempotently — never a
-blind append (see [Bundles](#bundles)). MCP registration that belongs to a host's own CLI is printed
-for you to run rather than executed, so nothing about your agent's config changes by surprise.
+`install` (and `uninstall`) print the exact changes and ask before touching anything — `--yes` (`-y`)
+applies without prompting (required when stdin isn't a TTY), `--dry-run` (`-n`) only previews. They
+write only where rgx owns the namespace, and edit shared files idempotently — never a blind append
+(see [Bundles](#bundles)). MCP registration that belongs to a host's own CLI is printed for you to run
+rather than executed, so nothing about your agent's config changes by surprise.
 
 ### Bundles
 
