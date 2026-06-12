@@ -6,6 +6,7 @@
 //! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -A/-B/-C, `--`).
 
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use rgx::compact::{self, CompactOpts};
@@ -58,8 +59,8 @@ fn usage() {
         "usage:\n  rgx [flags] <pattern> [path]            content search (accelerated ripgrep)\n  \
          rgx --compact [opts] <pattern> [path]   token-savings view: grouped + paged\n  \
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
-         rgx --server [start|stop|status|watch]\n  \
-         rgx --agent [mcp|skill|install]\n\n\
+         rgx --server [start|stop|restart|status|watch]\n  \
+         rgx --agent [mcp|skill|install|uninstall|list]\n\n\
          flags: -i -s -w -n -F -U -A<n> -B<n> -C<n> --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
@@ -74,9 +75,9 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx [flags] <pattern> [path]           content search (accelerated ripgrep)
   rgx --compact [opts] <pattern> [path]  token-savings view: grouped + paged
   rgx --find <name|path> [path]          locate files/dirs by name (find/fd-style)
-  rgx --server [start|stop|status|watch]   background index server      (rgx --server --help)
-  rgx --agent [mcp|skill|install]          AI-agent integration         (rgx --agent --help)
-  rgx --version                            print the rgx version (also -V)
+  rgx --server [start|stop|restart|status|watch]   background index server  (rgx --server --help)
+  rgx --agent [mcp|skill|install|uninstall|list]   AI-agent integration     (rgx --agent --help)
+  rgx --version                                    print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
 (anywhere, like rg): -i -s -w -n -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
@@ -106,6 +107,7 @@ indexer also starts on first search, so you rarely manage it by hand.
   rgx --server          run the indexer in the foreground
   rgx --server start    start the background indexer for this project
   rgx --server stop     stop it
+  rgx --server restart  stop it (if running) and start a fresh daemon — e.g. after upgrading rgx
   rgx --server status   one-shot: readiness, file/trigram counts, memory, last-sync age
   rgx --server watch    live status, repaints on every change until interrupted
 
@@ -156,16 +158,7 @@ fn server_cmd(rest: &[String]) -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some("start") => match client::spawn_daemon(&root) {
-            Ok(()) => {
-                println!("rgx: daemon starting for {}", root.display());
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("rgx: {e}");
-                ExitCode::from(2)
-            }
-        },
+        Some("start") => spawn_and_report(&root, "starting"),
         Some("stop") => match client::request_existing(&root, &Request::Shutdown) {
             Ok(Some(_)) => {
                 println!("rgx: daemon stopped");
@@ -180,6 +173,22 @@ fn server_cmd(rest: &[String]) -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        Some("restart") => {
+            match client::request_existing(&root, &Request::Shutdown) {
+                Ok(Some(_)) => {
+                    if !client::wait_until_stopped(&root) {
+                        eprintln!("rgx: previous daemon is still shutting down; try again");
+                        return ExitCode::from(2);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("rgx: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+            spawn_and_report(&root, "restarting")
+        }
         Some("status") => match client::request_existing(&root, &Request::Status) {
             Ok(Some(bytes)) => {
                 let _ = std::io::stdout().write_all(&bytes);
@@ -263,6 +272,19 @@ fn agent_cmd(rest: &[String]) -> ExitCode {
         }
         Some(other) => {
             eprintln!("rgx --agent: unknown subcommand {other:?}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn spawn_and_report(root: &Path, verb: &str) -> ExitCode {
+    match client::spawn_daemon(root) {
+        Ok(()) => {
+            println!("rgx: daemon {verb} for {}", root.display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("rgx: {e}");
             ExitCode::from(2)
         }
     }

@@ -70,6 +70,7 @@ preserves them across pages).
 | `rgx --server` | Run the index server in the foreground. |
 | `rgx --server start` | Start the background indexer for this project. |
 | `rgx --server stop` | Stop the background indexer for this project. |
+| `rgx --server restart` | Stop it (if running) and start a fresh daemon. Useful after upgrading rgx so the new binary serves. |
 | `rgx --server status` | One-shot snapshot: index state, file/trigram counts, memory, snapshot size and last-sync age. |
 | `rgx --server watch` | Live status: repaints on every change (cold-build progress count, then each reconcile) until interrupted. |
 | `rgx --server --help` | The server subcommands in full (also `rgx --help --server`). |

@@ -81,6 +81,19 @@ fn connect_or_spawn(root: &Path) -> Result<Stream> {
     bail!("daemon did not come up for {}", root.display());
 }
 
+/// Poll until no daemon is listening for `root`, up to ~5s. Used by `restart` after a Shutdown so the
+/// fresh daemon isn't spawned while the old one still holds the endpoint (it would exit as a no-op).
+/// Returns `true` once the endpoint is free, `false` on timeout.
+pub fn wait_until_stopped(root: &Path) -> bool {
+    for _ in 0..200 {
+        if let Ok(None) = transport::connect(root) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
 /// Spawn a detached background daemon (`rgx --server`) rooted at `root`.
 pub fn spawn_daemon(root: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
