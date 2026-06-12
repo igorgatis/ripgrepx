@@ -42,16 +42,18 @@ pub fn store_cursor(root: &Path, blob: Vec<u8>) -> Result<String> {
     Ok(String::from_utf8(out)?)
 }
 
-/// Redeem a pagination token at `root`'s daemon. `Ok(None)` means it expired or was already used (the
-/// daemon replies with an empty frame), so the caller should re-run the search.
+/// Redeem a pagination token at `root`'s daemon. `Ok(None)` means it expired or was already used —
+/// the daemon replies with an empty frame, or there's no daemon at all (so no stored cursors). Uses a
+/// connect-only request: a stale token must never spawn a fresh daemon (and a cold index build) just
+/// to discover it's gone.
 pub fn take_cursor(root: &Path, token: &str) -> Result<Option<Vec<u8>>> {
-    let blob = request(
+    let reply = request_existing(
         root,
         &Request::CursorTake {
             token: token.to_string(),
         },
     )?;
-    Ok((!blob.is_empty()).then_some(blob))
+    Ok(reply.filter(|blob| !blob.is_empty()))
 }
 
 /// Subscribe to the daemon's live status (spawning it if needed), invoking `render` with each status

@@ -138,11 +138,14 @@ impl Shared {
 }
 
 /// A per-process seed stamped onto pagination tokens so a restarted daemon's old tokens miss cleanly.
+/// Only the low 32 bits reach the token, and the raw low bits of a nanosecond clock repeat every
+/// ~4.3s, so fold the high half in — then two restarts collide only on the full 64-bit value.
 fn session_seed() -> u64 {
-    SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    nanos ^ (nanos >> 32)
 }
 
 /// Run the daemon for `root` in the foreground. Returns once the socket can't be owned (another

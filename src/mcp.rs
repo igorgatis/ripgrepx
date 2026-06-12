@@ -187,13 +187,18 @@ fn compact_search(root: &Path, q: Query) -> String {
         text.push_str(&format!("\nnote: {note}"));
     }
     // root_hint is None: the MCP server root is authoritative, so the cursor never carries a path.
-    // The blob is parked in this root's daemon; the agent echoes back the short token.
-    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None)
-        && let Ok(token) = client::store_cursor(root, cursor::encode(&next))
-    {
-        text.push_str(&format!(
-            "\n(more: call content_search with cursor: \"{token}\")"
-        ));
+    // The blob is parked in this root's daemon; the agent echoes back the short token. On a store
+    // failure, still tell the agent more remains so it can't mistake a partial page for the whole.
+    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None) {
+        match client::store_cursor(root, cursor::encode(&next)) {
+            Ok(token) => text.push_str(&format!(
+                "\n(more: call content_search with cursor: \"{token}\")"
+            )),
+            Err(e) => text.push_str(&format!(
+                "\nnote: more results exist but the pagination cursor could not be stored ({e}); \
+                 re-run the search"
+            )),
+        }
     }
     text
 }
