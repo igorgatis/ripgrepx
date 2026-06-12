@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/ripgrepx.svg" alt="ripgrepx" width="200">
-</p>
-
 # ripgrepx (`rgx`)
 
 **Instant ripgrep for codebases you search over and over.**
