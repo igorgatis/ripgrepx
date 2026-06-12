@@ -56,7 +56,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|status|watch]\n  \
          rgx --agent [mcp|skill|install]\n\n\
-         flags: -i -s -w -F -U -A<n> -B<n> -C<n> --\n\
+         flags: -i -s -w -n -F -U -A<n> -B<n> -C<n> --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -74,7 +74,7 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --agent [mcp|skill|install]          AI-agent integration         (rgx --agent --help)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
+(anywhere, like rg): -i -s -w -n -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
 first token. Examples:
     rgx 'fn \\w+_total' src/        rgx -i needle        rgx -- --server   (literal flag)
 
@@ -381,6 +381,7 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
             "-w" | "--word-regexp" => opts.word = true,
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
+            "-n" | "--line-number" => {}
             "-l" | "--files-with-matches" if compact => mode = Mode::Files,
             "-c" | "--count" if compact => mode = Mode::Count,
             p if compact && (p == "--cursor" || p.starts_with("--cursor=")) => {
@@ -650,7 +651,7 @@ mod tests {
 
     #[test]
     fn parses_flags_pattern_and_path() {
-        let args = argv(&["-i", "-w", "needle", "src/"]);
+        let args = argv(&["-i", "-w", "-n", "needle", "src/"]);
         let p = parse_search(&args, false).unwrap();
         assert!(p.opts.case_insensitive && p.opts.word);
         assert!(p.cursor.is_none());

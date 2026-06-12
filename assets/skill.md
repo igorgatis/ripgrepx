@@ -25,7 +25,8 @@ rgx -C 3 pattern            # 3 lines of context (also -A <n> / -B <n>)
 ```
 
 - Output is exactly `rg`'s `path:line:text`. Anything you'd write as `rg <pattern>` works as
-  `rgx <pattern>`. Supported flags: `-i` `-s` `-w` `-F` `-U` `-A<n>` `-B<n>` `-C<n>` `--`.
+  `rgx <pattern>`. Supported flags: `-i` `-s` `-w` `-n` `-F` `-U` `-A<n>` `-B<n>` `-C<n>` `--`.
+  Line numbers are always on, so `-n` is accepted as a no-op for drop-in parity.
 - Patterns the index can't accelerate (e.g. `.`, `\w+`, very short patterns) transparently fall back
   to a full scan — still correct, just not faster.
 - To search for text that looks like a flag, use ripgrep's escapes: `rgx -e --foo` or
