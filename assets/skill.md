@@ -28,6 +28,7 @@ rgx -i needle               # -i case-insensitive, -s case-sensitive, -w whole-w
 rgx -F 'literal.string'     # fixed string (no regex); -U multiline
 rgx -C 3 pattern            # context (-A <n> / -B <n> / -C <n>)
 rgx -v pattern              # non-matching lines (-v / --invert-match)
+rgx -o '\w+@\w+'            # only the matched part of each line (-o)
 rgx -t rust 'fn .*Handler'  # only Rust files (-t/--type, -T/--type-not, repeatable)
 rgx -g '*.ts' useAuth       # filter by glob (-g/--glob; leading ! negates)
 rgx -e foo -e bar           # multiple patterns, OR'd (-e/--regexp, repeatable)
@@ -35,7 +36,7 @@ rgx --hidden --no-ignore p  # also search hidden + ignored files
 rgx --sortr=modified TODO   # order results (like rg --sort); see below
 ```
 
-- Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -v -e/--regexp -A<n> -B<n>
+- Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n>
   -C<n> -g/--glob -t/--type -T/--type-not --hidden --no-ignore --` (line numbers always on, so `-n` is
   a no-op). To search flag-like text: `rgx -- --foo` or `rgx -e --foo`. `-g`/`-t`/`-T` narrow the
   search (still index-accelerated); `-v`/`--hidden`/`--no-ignore` scan in-process (same output, no

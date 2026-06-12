@@ -3,7 +3,7 @@
 //! name lookup. See `docs/cli.md`.
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
-//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -e/--regexp,
+//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -o, -e/--regexp,
 //! -A/-B/-C, -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, and `--sort`/`--sortr`);
 //! `--weights` is rgx's own (feeds `--sort=weight`).
 
@@ -65,7 +65,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -v -e<pat> -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
+         flags: -i -s -w -n -F -U -v -o -e<pat> -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -84,7 +84,7 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --version                                    print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -n -F -U -v -e/--regexp -A<n> -B<n> -C<n> -g/--glob -t/--type
+(anywhere, like rg): -i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob -t/--type
 -T/--type-not --hidden --no-ignore --. rgx's own modes are recognized only as the first token.
 Examples:
     rgx 'fn \\w+_total' src/    rgx -t rust TODO    rgx -e foo -e bar    rgx -e --server (literal)
@@ -442,6 +442,7 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
             "-v" | "--invert-match" => opts.invert = true,
+            "-o" | "--only-matching" => opts.only_matching = true,
             "--hidden" => opts.hidden = true,
             "--no-ignore" => opts.no_ignore = true,
             "-n" | "--line-number" => {}
@@ -782,7 +783,7 @@ struct CompactQuery {
     pattern: String,
     opts: SearchOptions,
     mode: Mode,
-    start_after: Option<(i64, String, u64)>,
+    start_after: Option<(i64, String, u64, u32)>,
     page_size: usize,
     root_hint: Option<String>,
     sort: SortSpec,
@@ -841,7 +842,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         let start_after = c
             .last_path
             .clone()
-            .map(|p| (c.last_order, p, c.last_lineno));
+            .map(|p| (c.last_order, p, c.last_lineno, c.last_ordinal));
         CompactQuery {
             pattern: c.pattern,
             opts: c.opts,
@@ -1008,9 +1009,9 @@ mod tests {
 
     #[test]
     fn parses_invert_hidden_no_ignore() {
-        let args = argv(&["-v", "--hidden", "--no-ignore", "needle"]);
+        let args = argv(&["-v", "-o", "--hidden", "--no-ignore", "needle"]);
         let p = parse_search(&args, false).unwrap();
-        assert!(p.opts.invert && p.opts.hidden && p.opts.no_ignore);
+        assert!(p.opts.invert && p.opts.only_matching && p.opts.hidden && p.opts.no_ignore);
         assert_eq!(p.positionals, vec!["needle"]);
     }
 

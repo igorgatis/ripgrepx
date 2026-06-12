@@ -33,6 +33,8 @@ pub struct SearchOptions {
     pub hidden: bool,
     /// `--no-ignore`: don't honor `.gitignore`/`.ignore`/`.rgignore`/excludes.
     pub no_ignore: bool,
+    /// `-o`/`--only-matching`: print only the matched part of each line (one line per match).
+    pub only_matching: bool,
     /// `-B` / `-C`: lines of leading context.
     pub before_context: usize,
     /// `-A` / `-C`: lines of trailing context.
@@ -77,10 +79,13 @@ fn search_one(
     matcher: &RegexMatcher,
     path: &Path,
     root: &Path,
+    only_matching: bool,
     buf: &mut Vec<u8>,
 ) {
     buf.clear();
-    let mut printer = StandardBuilder::new().build(NoColor::new(&mut *buf));
+    let mut printer = StandardBuilder::new()
+        .only_matching(only_matching)
+        .build(NoColor::new(&mut *buf));
     let shown = display_path(path, root);
     let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
 }
@@ -103,7 +108,7 @@ pub fn search_streaming(
             .map_init(
                 || (build_searcher(opts), Vec::new()),
                 |(searcher, buf), path| {
-                    search_one(searcher, &matcher, path, root, buf);
+                    search_one(searcher, &matcher, path, root, opts.only_matching, buf);
                     std::mem::take(buf)
                 },
             )
@@ -136,7 +141,9 @@ pub fn full_scan(
         // Build the searcher and printer once per walk thread (not per file): for a match-everything
         // query over tens of thousands of files, per-file printer construction dominates otherwise.
         let mut searcher = build_searcher(opts);
-        let mut printer = StandardBuilder::new().build(NoColor::new(Vec::<u8>::new()));
+        let mut printer = StandardBuilder::new()
+            .only_matching(opts.only_matching)
+            .build(NoColor::new(Vec::<u8>::new()));
         Box::new(move |res| {
             if let Ok(entry) = res
                 && entry.file_type().is_some_and(|t| t.is_file())
@@ -210,6 +217,25 @@ mod tests {
         assert!(text.contains("f.txt:1:alpha"), "got: {text:?}");
         assert!(text.contains("f.txt:3:delta"), "got: {text:?}");
         assert!(!text.contains("NEEDLE"), "got: {text:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn only_matching_emits_just_the_match_once_per_hit() {
+        let tmp = std::env::temp_dir().join(format!("rgx_only_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = tmp.join("f.txt");
+        std::fs::write(&p, b"xx foo yy foo zz\n").unwrap();
+
+        let opts = SearchOptions {
+            only_matching: true,
+            ..Default::default()
+        };
+        let out = search("foo", &[p.as_path()], &tmp, opts).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        // `-o` prints only the match, once per hit on the line (two `foo` here), not the full line.
+        assert_eq!(text, "f.txt:1:foo\nf.txt:1:foo\n", "got: {text:?}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

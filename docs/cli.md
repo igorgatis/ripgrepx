@@ -50,7 +50,7 @@ rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>
 rgx adds exactly **four** modes, recognized only as the **leading token** (any other position goes
 straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and `--agent` gate the
 daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. The ripgrep flags rgx
-passes through (anywhere, like rg): `-i -s -w -n -F -U -v -e/--regexp -A<n> -B<n> -C<n> -g/--glob
+passes through (anywhere, like rg): `-i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob
 -t/--type -T/--type-not --hidden --no-ignore`, plus ripgrep's `--sort`/`--sortr` and rgx's own
 `--weights` (for `--sort=weight`; see [Ordering](#ordering--sort--sortr)).
 

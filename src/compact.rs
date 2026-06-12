@@ -25,10 +25,11 @@ pub const DEFAULT_MAX_COLS: usize = 200;
 
 pub struct CompactOpts {
     pub mode: Mode,
-    /// Keyset resume position: render only entries strictly after this `(order, path, lineno)` key
-    /// (lineno is ignored in files/count modes; `order` is the sort value — 0 for the default order).
-    /// `None` starts from the beginning.
-    pub start_after: Option<(i64, String, u64)>,
+    /// Keyset resume position: render only entries strictly after this `(order, path, lineno, ordinal)`
+    /// key (lineno/ordinal are 0 in files/count modes; `order` is the sort value — 0 for the default
+    /// order; `ordinal` disambiguates multiple `-o` matches on one line). `None` starts from the
+    /// beginning.
+    pub start_after: Option<(i64, String, u64, u32)>,
     pub page_size: usize,
     pub max_cols: usize,
     /// How to order files (`--sort`/`--sortr`); `SortKey::None` keeps the default `(path, lineno)`
@@ -52,6 +53,15 @@ impl Default for CompactOpts {
             root: None,
         }
     }
+}
+
+/// Total order over a match's `(order, path, lineno, ordinal)` keyset key. The `(order, path, lineno)`
+/// prefix is [`sort::cmp`] (reversed for `--sortr`); the per-line `ordinal` is the final tiebreak and
+/// is never reversed — multiple `-o` matches on one line stay in match order, like lines within a
+/// file. The ordinal makes the key a strict total order even when `-o` yields duplicate `(path,
+/// lineno)` rows, so keyset paging can't drop or repeat them.
+fn match_cmp(a: (i64, &str, u64, u32), b: (i64, &str, u64, u32), reverse: bool) -> Ordering {
+    sort::cmp((a.0, a.1, a.2), (b.0, b.1, b.2), reverse).then(a.3.cmp(&b.3))
 }
 
 /// Per-file order value (max weight, file mtime, …) keyed by path. Empty for `path`/`none`, where the
@@ -102,8 +112,9 @@ pub struct Page {
     /// empty.
     pub first_index: usize,
     pub last_index: usize,
-    /// Keyset key of the last rendered entry, to seed the next cursor; `None` when nothing remains.
-    pub last_key: Option<(i64, String, u64)>,
+    /// Keyset key of the last rendered entry `(order, path, lineno, ordinal)`, to seed the next cursor;
+    /// `None` when nothing remains.
+    pub last_key: Option<(i64, String, u64, u32)>,
     pub has_more: bool,
     /// Fingerprint of the full result set, for staleness detection across pages.
     pub fingerprint: u64,
@@ -131,9 +142,10 @@ impl Page {
             opts,
             filter,
             page_size,
-            last_path: self.last_key.as_ref().map(|(_, p, _)| p.clone()),
-            last_lineno: self.last_key.as_ref().map_or(0, |(_, _, l)| *l),
-            last_order: self.last_key.as_ref().map_or(0, |(o, _, _)| *o),
+            last_path: self.last_key.as_ref().map(|(_, p, _, _)| p.clone()),
+            last_lineno: self.last_key.as_ref().map_or(0, |(_, _, l, _)| *l),
+            last_order: self.last_key.as_ref().map_or(0, |(o, _, _, _)| *o),
+            last_ordinal: self.last_key.as_ref().map_or(0, |(_, _, _, n)| *n),
             sort,
             weights,
             prev_total: self.total_matches,
@@ -203,6 +215,18 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
             rev,
         )
     });
+    // Per-line match ordinal, aligned with `match_idx`: 0 for the first match on a (path, lineno),
+    // incrementing for each further match on the same line. Only `-o` produces >1 match per line; for
+    // every other mode all ordinals are 0. It's the keyset tiebreak that keeps duplicate-line matches
+    // a strict total order (so paging can't drop/repeat them). The stable sort above kept same-line
+    // matches in their emitted left-to-right order, so the running count assigns left-to-right.
+    let mut ordinals = vec![0u32; match_idx.len()];
+    for k in 1..match_idx.len() {
+        let (a, b) = (match_idx[k], match_idx[k - 1]);
+        if rows[a].path == rows[b].path && rows[a].lineno == rows[b].lineno {
+            ordinals[k] = ordinals[k - 1] + 1;
+        }
+    }
     let total_matches = match_idx.len();
 
     let mut files: Vec<&str> = rows.iter().filter(|r| r.is_match).map(|r| r.path).collect();
@@ -231,6 +255,7 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
         Mode::Matches => render_matches(
             &rows,
             &match_idx,
+            &ordinals,
             &file_order,
             total_matches,
             total_files,
@@ -258,6 +283,7 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
 fn render_matches(
     rows: &[Row],
     match_idx: &[usize],
+    ordinals: &[u32],
     file_order: &HashMap<&str, i64>,
     total_matches: usize,
     total_files: usize,
@@ -268,32 +294,40 @@ fn render_matches(
     fingerprint: u64,
 ) -> Page {
     let order_of = |path: &str| file_order.get(path).copied().unwrap_or(0);
-    let key = |i: usize| (order_of(rows[i].path), rows[i].path, rows[i].lineno);
     let rev = c.sort.reverse;
+    // Full keyset key at position `k` in match_idx (carries the per-line ordinal); `row_key` is the
+    // 3-tuple used only for the display sort (where a stable sort keeps same-line `-o` matches ordered).
+    let key_at = |k: usize| {
+        let i = match_idx[k];
+        (
+            order_of(rows[i].path),
+            rows[i].path,
+            rows[i].lineno,
+            ordinals[k],
+        )
+    };
+    let row_key = |i: usize| (order_of(rows[i].path), rows[i].path, rows[i].lineno);
     // Keyset: count matches at or before the resume key, then take the next window.
     let skip = match &c.start_after {
-        Some((o, p, l)) => match_idx
-            .iter()
-            .filter(|&&i| sort::cmp(key(i), (*o, p.as_str(), *l), rev) != Ordering::Greater)
+        Some((o, p, l, n)) => (0..match_idx.len())
+            .filter(|&k| match_cmp(key_at(k), (*o, p.as_str(), *l, *n), rev) != Ordering::Greater)
             .count(),
         None => 0,
     };
-    let window_matches: Vec<usize> = match_idx
-        .iter()
-        .copied()
-        .skip(skip)
-        .take(page_size)
-        .collect();
-    let rendered = window_matches.len();
-    let window: std::collections::HashSet<usize> = window_matches.iter().copied().collect();
+    let end = (skip + page_size).min(match_idx.len());
+    let rendered = end - skip;
+    let window: std::collections::HashSet<usize> = match_idx[skip..end].iter().copied().collect();
     let first_index = if rendered == 0 { 0 } else { skip + 1 };
-    let last_index = if rendered == 0 { 0 } else { skip + rendered };
-    let has_more = skip + rendered < total_matches;
-    let last_key = window_matches.last().map(|&i| {
+    let last_index = if rendered == 0 { 0 } else { end };
+    let has_more = end < total_matches;
+    let last_key = (rendered > 0).then(|| {
+        let k = end - 1;
+        let i = match_idx[k];
         (
             order_of(rows[i].path),
             rows[i].path.to_string(),
             rows[i].lineno,
+            ordinals[k],
         )
     });
 
@@ -319,7 +353,7 @@ fn render_matches(
             }
         })
         .collect();
-    to_render.sort_by(|&a, &b| sort::cmp(key(a), key(b), rev));
+    to_render.sort_by(|&a, &b| sort::cmp(row_key(a), row_key(b), rev));
     let matcher = build_matcher(&effective_pattern(pattern, opts), opts).ok();
     let mut body = String::new();
     let mut cur_path: Option<&str> = None;
@@ -375,7 +409,7 @@ fn render_by_file(
     let order_of = |path: &str| file_order.get(path).copied().unwrap_or(0);
     let rev = c.sort.reverse;
     let skip = match &c.start_after {
-        Some((o, p, _)) => files
+        Some((o, p, _, _)) => files
             .iter()
             .filter(|&&f| {
                 sort::cmp((order_of(f), f, 0), (*o, p.as_str(), 0), rev) != Ordering::Greater
@@ -388,7 +422,7 @@ fn render_by_file(
     let first_index = if rendered == 0 { 0 } else { skip + 1 };
     let last_index = if rendered == 0 { 0 } else { skip + rendered };
     let has_more = skip + rendered < total_files;
-    let last_key = window.last().map(|&p| (order_of(p), p.to_string(), 0));
+    let last_key = window.last().map(|&p| (order_of(p), p.to_string(), 0, 0));
 
     let counts: HashMap<&str, usize> = if matches!(c.mode, Mode::Count) {
         let mut m = HashMap::new();
@@ -713,7 +747,7 @@ src/ab.rs:1:fn z\n";
                 ..Default::default()
             },
         );
-        assert_eq!(p1.last_key, Some((0, "src/a.rs".to_string(), 1)));
+        assert_eq!(p1.last_key, Some((0, "src/a.rs".to_string(), 1, 0)));
         let p2 = page(
             RAW,
             "fn",
@@ -888,7 +922,7 @@ f.txt-4-after line\n";
             RAW,
             "fn",
             CompactOpts {
-                start_after: Some((0, "zzz".to_string(), 0)),
+                start_after: Some((0, "zzz".to_string(), 0, 0)),
                 ..Default::default()
             },
         );
@@ -897,6 +931,40 @@ f.txt-4-after line\n";
         assert_eq!(p.last_index, 0);
         assert!(p.body.is_empty());
         assert_eq!(p.last_key, None);
+    }
+
+    #[test]
+    fn only_matching_duplicate_lines_page_without_dropping() {
+        // `-o` emits multiple matches per line as rows with the SAME (path, lineno); the per-line
+        // ordinal keeps them a strict keyset order so paging reaches all of them.
+        let raw = b"f.txt:1:foo\nf.txt:1:foo\nf.txt:2:foo\n";
+        let mk = |start_after| {
+            format(
+                raw,
+                "foo",
+                SearchOptions::default(),
+                CompactOpts {
+                    page_size: 1,
+                    start_after,
+                    ..Default::default()
+                },
+            )
+        };
+        let mut rendered = 0;
+        let mut sa = None;
+        for _ in 0..6 {
+            let p = mk(sa.clone());
+            assert_eq!(p.total_matches, 3);
+            rendered += p.body.lines().filter(|l| l.starts_with("  ")).count();
+            if !p.has_more {
+                break;
+            }
+            sa = p.last_key.clone();
+        }
+        assert_eq!(
+            rendered, 3,
+            "every -o match reachable across pages, none dropped"
+        );
     }
 
     #[test]
@@ -934,7 +1002,7 @@ f.txt-4-after line\n";
         assert!(!p1.body.contains("src/a.rs"));
         assert!(p1.has_more);
         assert_eq!(
-            p1.last_key.as_ref().map(|(o, _, _)| *o),
+            p1.last_key.as_ref().map(|(o, _, _, _)| *o),
             Some(sort::weight_to_order(0.7))
         );
         // Page 2 resumes after it and yields the lower-weighted file, nothing dropped.

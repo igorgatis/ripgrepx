@@ -90,7 +90,7 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                         start_after: c
                             .last_path
                             .clone()
-                            .map(|p| (c.last_order, p, c.last_lineno)),
+                            .map(|p| (c.last_order, p, c.last_lineno, c.last_ordinal)),
                         prev: Some((c.prev_total, c.fingerprint)),
                         pattern: c.pattern,
                         opts: c.opts,
@@ -130,6 +130,7 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                         invert: arg_bool(args, "invert_match"),
                         hidden: arg_bool(args, "hidden"),
                         no_ignore: arg_bool(args, "no_ignore"),
+                        only_matching: arg_bool(args, "only_matching"),
                         ..Default::default()
                     },
                     mode: if arg_bool(args, "count") {
@@ -172,7 +173,7 @@ struct Query {
     pattern: String,
     opts: SearchOptions,
     mode: Mode,
-    start_after: Option<(i64, String, u64)>,
+    start_after: Option<(i64, String, u64, u32)>,
     page_size: usize,
     /// `(total, fingerprint)` when resuming a cursor, for the staleness note.
     prev: Option<(usize, u32)>,
@@ -338,6 +339,7 @@ fn tools() -> Value {
                     "fixed_strings": {"type": "boolean", "description": "treat pattern as a literal (-F)"},
                     "multi_line": {"type": "boolean"},
                     "invert_match": {"type": "boolean", "description": "return non-matching lines (-v)"},
+                    "only_matching": {"type": "boolean", "description": "return only the matched part of each line (-o)"},
                     "hidden": {"type": "boolean", "description": "also search hidden files/dirs (--hidden)"},
                     "no_ignore": {"type": "boolean", "description": "ignore .gitignore/.ignore rules (--no-ignore)"},
                     "globs": {"type": "array", "items": {"type": "string"}, "description": "include/exclude files by glob (-g); a leading ! negates, e.g. [\"*.rs\", \"!*_test.rs\"]"},

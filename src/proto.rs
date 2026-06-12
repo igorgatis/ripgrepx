@@ -40,20 +40,21 @@ pub enum Request {
     CursorTake { token: String },
 }
 
-/// Pack the boolean flags into one byte. All 8 bits are now in use (bit 7 = `no_ignore`); a 9th flag
-/// needs a wider field here and in the cursor's opts byte, plus a cursor `VERSION` bump.
-pub(crate) fn pack_opts(o: &SearchOptions) -> u8 {
-    (o.case_insensitive as u8)
-        | ((o.multi_line as u8) << 1)
-        | ((o.dot_matches_new_line as u8) << 2)
-        | ((o.word as u8) << 3)
-        | ((o.fixed_strings as u8) << 4)
-        | ((o.invert as u8) << 5)
-        | ((o.hidden as u8) << 6)
-        | ((o.no_ignore as u8) << 7)
+/// Pack the boolean flags into a `u16` (bits 0-8 used; bit 8 = `only_matching`). 7 bits of headroom
+/// remain before the next widening.
+pub(crate) fn pack_opts(o: &SearchOptions) -> u16 {
+    (o.case_insensitive as u16)
+        | ((o.multi_line as u16) << 1)
+        | ((o.dot_matches_new_line as u16) << 2)
+        | ((o.word as u16) << 3)
+        | ((o.fixed_strings as u16) << 4)
+        | ((o.invert as u16) << 5)
+        | ((o.hidden as u16) << 6)
+        | ((o.no_ignore as u16) << 7)
+        | ((o.only_matching as u16) << 8)
 }
 
-pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
+pub(crate) fn unpack_opts(b: u16, before: u32, after: u32) -> SearchOptions {
     SearchOptions {
         case_insensitive: b & 1 != 0,
         multi_line: b & 2 != 0,
@@ -63,6 +64,7 @@ pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
         invert: b & 32 != 0,
         hidden: b & 64 != 0,
         no_ignore: b & 128 != 0,
+        only_matching: b & 256 != 0,
         before_context: before as usize,
         after_context: after as usize,
     }
@@ -77,7 +79,7 @@ pub fn write_request(w: &mut impl Write, req: &Request) -> Result<()> {
             filter,
         } => {
             body.push(b'S');
-            body.push(pack_opts(opts));
+            body.extend_from_slice(&pack_opts(opts).to_le_bytes());
             body.extend_from_slice(&(opts.before_context as u32).to_le_bytes());
             body.extend_from_slice(&(opts.after_context as u32).to_le_bytes());
             put_bytes(&mut body, pattern.as_bytes());
@@ -116,7 +118,7 @@ pub fn read_request(r: &mut impl Read) -> Result<Request> {
     let tag = take_u8(&mut cur)?;
     Ok(match tag {
         b'S' => {
-            let flags = take_u8(&mut cur)?;
+            let flags = take_u16(&mut cur)?;
             let before = take_u32(&mut cur)?;
             let after = take_u32(&mut cur)?;
             let opts = unpack_opts(flags, before, after);
@@ -333,6 +335,15 @@ fn take_u8(cur: &mut &[u8]) -> Result<u8> {
         .ok_or_else(|| anyhow::anyhow!("short frame"))?;
     *cur = rest;
     Ok(b)
+}
+
+fn take_u16(cur: &mut &[u8]) -> Result<u16> {
+    if cur.len() < 2 {
+        bail!("short frame");
+    }
+    let (head, rest) = cur.split_at(2);
+    *cur = rest;
+    Ok(u16::from_le_bytes(head.try_into().unwrap()))
 }
 
 fn take_u32(cur: &mut &[u8]) -> Result<u32> {

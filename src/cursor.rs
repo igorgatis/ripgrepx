@@ -18,7 +18,8 @@ use crate::sort::SortSpec;
 const KIND: u8 = 0x01;
 // Bump on any wire-shape change so a cross-version binary cleanly rejects a cursor it would otherwise
 // misread. 0x03: opts byte grew 5 -> 8 flag bits (invert/hidden/no_ignore). 0x04: added the
-// `-g`/`-t`/`-T` filter lists.
+// `-g`/`-t`/`-T` filter lists. 0x05: packed opts widened to u16 (`only_matching`) + per-line match
+// ordinal in the keyset.
 const VERSION: u8 = 0x04;
 
 /// The compact output shape a cursor paginates over.
@@ -42,11 +43,13 @@ pub struct Cursor {
     /// The `-g`/`-t`/`-T` file filter, so the next page narrows the same way.
     pub filter: FilterSpec,
     pub page_size: usize,
-    /// Keyset position: resume after this `(order, path, lineno)` (lineno is 0 in files/count modes;
-    /// `order` is the sort value — 0 for the default order).
+    /// Keyset position: resume after this `(order, path, lineno, ordinal)` (lineno is 0 in files/count
+    /// modes; `order` is the sort value — 0 for the default order; `ordinal` disambiguates multiple
+    /// `-o` matches on one line — 0 otherwise).
     pub last_path: Option<String>,
     pub last_lineno: u64,
     pub last_order: i64,
+    pub last_ordinal: u32,
     /// How the view is ordered (`--sort`/`--sortr`), so the next page reproduces the exact order.
     pub sort: SortSpec,
     /// The `--weights` spec for `--sort=weight`, so the next page rebuilds the same ranker. `None`
@@ -78,7 +81,8 @@ pub fn encode(c: &Cursor) -> Vec<u8> {
         Mode::Files => 1,
         Mode::Count => 2,
     };
-    let mut b = vec![KIND, VERSION, mode, pack_opts(&c.opts)];
+    let mut b = vec![KIND, VERSION, mode];
+    put_varint(&mut b, pack_opts(&c.opts) as u64);
     put_varint(&mut b, c.opts.before_context as u64);
     put_varint(&mut b, c.opts.after_context as u64);
     put_varint(&mut b, c.page_size as u64);
@@ -86,6 +90,7 @@ pub fn encode(c: &Cursor) -> Vec<u8> {
     put_varint(&mut b, c.fingerprint as u64);
     put_varint(&mut b, c.last_lineno);
     put_varint(&mut b, c.last_order as u64);
+    put_varint(&mut b, c.last_ordinal as u64);
     b.push(c.sort.encode_key());
     b.push(c.sort.reverse as u8);
     put_opt(&mut b, c.last_path.as_deref());
@@ -112,7 +117,7 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
         2 => Mode::Count,
         other => bail!("unknown cursor mode {other}"),
     };
-    let packed = take_u8(&mut cur)?;
+    let packed = take_varint(&mut cur)? as u16;
     let before = take_varint(&mut cur)? as u32;
     let after = take_varint(&mut cur)? as u32;
     let opts = unpack_opts(packed, before, after);
@@ -121,6 +126,7 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
     let fingerprint = take_varint(&mut cur)? as u32;
     let last_lineno = take_varint(&mut cur)?;
     let last_order = take_varint(&mut cur)? as i64;
+    let last_ordinal = take_varint(&mut cur)? as u32;
     let sort_key = take_u8(&mut cur)?;
     let sort_reverse = take_u8(&mut cur)? != 0;
     let sort = SortSpec::decode(sort_key, sort_reverse)?;
@@ -144,6 +150,7 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
         last_path,
         last_lineno,
         last_order,
+        last_ordinal,
         sort,
         weights,
         prev_total,
@@ -261,6 +268,7 @@ mod tests {
             last_path: Some("src/café.rs".into()),
             last_lineno: 42,
             last_order: -700_000,
+            last_ordinal: 2,
             sort: crate::sort::SortSpec {
                 key: crate::sort::SortKey::Weight,
                 reverse: false,
