@@ -76,3 +76,137 @@ jobs:
           cd npm
           npm version "${TAG#v}" --no-git-tag-version --allow-same-version
           npm publish --access public
+
+  # Publish the source crate to crates.io (`cargo install ripgrepx`). Independent of the binaries.
+  # Skipped automatically until a CARGO_REGISTRY_TOKEN secret is set. Cargo.toml version must equal
+  # the tag (bump it before tagging).
+  crates-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set - skipping crates.io publish."
+            exit 0
+          fi
+          cargo publish --locked
+
+  # Build one wheel per platform that bundles the rgx binary (`pip install ripgrepx`). Enable by
+  # setting the repo variable PUBLISH_PYPI=true and configuring PyPI Trusted Publishing for this repo.
+  pypi-build:
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
+    name: pypi ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist/*.whl
+
+  pypi-publish:
+    if: ${{ vars.PUBLISH_PYPI == 'true' }}
+    needs: pypi-build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write # PyPI Trusted Publishing (OIDC) — no API token needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  # Regenerate the formula in your tap (igorgatis/homebrew-ripgrepx) from this release's archives.
+  # Skipped automatically until a HOMEBREW_TAP_TOKEN secret (a PAT with write to the tap) is set.
+  homebrew:
+    needs: upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update the Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set - skipping Homebrew tap update."
+            exit 0
+          fi
+          set -euo pipefail
+          VER="${TAG#v}"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          sha() { curl -fsSL "$BASE/rgx-$TAG-$1.tar.gz" | sha256sum | cut -d' ' -f1; }
+          MAC_ARM=$(sha aarch64-apple-darwin)
+          MAC_X64=$(sha x86_64-apple-darwin)
+          LIN_ARM=$(sha aarch64-unknown-linux-gnu)
+          LIN_X64=$(sha x86_64-unknown-linux-gnu)
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/igorgatis/homebrew-ripgrepx.git" tap
+          mkdir -p tap/Formula
+          cat > tap/Formula/ripgrepx.rb <<EOF
+          class Ripgrepx < Formula
+            desc "Instant ripgrep via a persistent index (the rgx command)"
+            homepage "https://github.com/$REPO"
+            version "$VER"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "$BASE/rgx-$TAG-aarch64-apple-darwin.tar.gz"
+                sha256 "$MAC_ARM"
+              end
+              on_intel do
+                url "$BASE/rgx-$TAG-x86_64-apple-darwin.tar.gz"
+                sha256 "$MAC_X64"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "$BASE/rgx-$TAG-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "$LIN_ARM"
+              end
+              on_intel do
+                url "$BASE/rgx-$TAG-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "$LIN_X64"
+              end
+            end
+
+            def install
+              bin.install "rgx"
+            end
+
+            test do
+              assert_match "usage", shell_output("#{bin}/rgx --help 2>&1", 2)
+            end
+          end
+          EOF
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/ripgrepx.rb
+          git commit -m "ripgrepx $VER" && git push

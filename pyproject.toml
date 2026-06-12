@@ -1,0 +1,29 @@
+# PyPI packaging: maturin builds one wheel per platform that bundles the compiled `rgx` binary
+# (bindings = "bin"), so `pip install ripgrepx` installs the `rgx` command. Built/published by
+# .github/workflows/release.yml; not part of the crates.io crate (see Cargo.toml `exclude`).
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ripgrepx"
+description = "Instant ripgrep via a persistent index — installs the rgx command."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["ripgrep", "grep", "search", "code-search", "mcp", "cli"]
+classifiers = [
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Rust",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/igorgatis/ripgrepx"
+Repository = "https://github.com/igorgatis/ripgrepx"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
