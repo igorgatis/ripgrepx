@@ -160,8 +160,9 @@ fn put_str_list(buf: &mut Vec<u8>, items: &[String]) {
 }
 
 fn take_str_list(cur: &mut &[u8]) -> Result<Vec<String>> {
+    // Grow as we read rather than pre-allocating from the untrusted count (see proto::take_str_list).
     let n = take_varint(cur)? as usize;
-    let mut v = Vec::with_capacity(n);
+    let mut v = Vec::new();
     for _ in 0..n {
         v.push(String::from_utf8(take_bytes(cur)?)?);
     }

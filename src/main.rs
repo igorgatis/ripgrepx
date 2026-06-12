@@ -723,6 +723,22 @@ fn content_cmd(args: &[String]) -> ExitCode {
 
 /// `--compact`: the token-savings view. Unlike a bare search, this must see the whole result set to
 /// count, group by file, and paginate — so it buffers instead of streaming, then renders one page.
+/// The resolved compact query — built fresh from flags/positionals or unpacked from a `--cursor`.
+/// A named struct (vs a positional tuple) so adding a field can't silently swap two same-typed ones.
+struct CompactQuery {
+    pattern: String,
+    opts: SearchOptions,
+    mode: Mode,
+    start_after: Option<(i64, String, u64)>,
+    page_size: usize,
+    root_hint: Option<String>,
+    sort: SortSpec,
+    weights: Option<String>,
+    filter: FilterSpec,
+    /// `(total, fingerprint)` at mint time when resuming a cursor, for the staleness note.
+    prev: Option<(usize, u32)>,
+}
+
 /// The match set is identical to `rg`; only presentation differs (see `compact`).
 fn compact_cmd(args: &[String]) -> ExitCode {
     let parsed = match parse_search(args, true) {
@@ -737,19 +753,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     // Resume from the cursor (which carries the whole query) when given, else build a fresh query
     // from the flags + positionals. `prev` is the (total, fingerprint) at mint time, for the
     // staleness check below.
-    #[allow(clippy::type_complexity)]
-    let (pattern, opts, mode, start_after, page_size, root_hint, sort, weights, filter, prev): (
-        String,
-        SearchOptions,
-        Mode,
-        Option<(i64, String, u64)>,
-        usize,
-        Option<String>,
-        SortSpec,
-        Option<String>,
-        FilterSpec,
-        Option<(usize, u32)>,
-    ) = if let Some(tok) = parsed.cursor {
+    let plan = if let Some(tok) = parsed.cursor {
         // The cursor is self-contained, so any co-supplied query flag would be silently dropped.
         // Reject the combination explicitly rather than ignoring the flag.
         let stray_flags = parsed.page_size.is_some()
@@ -784,18 +788,18 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             .last_path
             .clone()
             .map(|p| (c.last_order, p, c.last_lineno));
-        (
-            c.pattern,
-            c.opts,
-            c.mode,
+        CompactQuery {
+            pattern: c.pattern,
+            opts: c.opts,
+            mode: c.mode,
             start_after,
-            c.page_size,
-            c.root_hint,
-            c.sort,
-            c.weights,
-            c.filter,
-            Some((c.prev_total, c.fingerprint)),
-        )
+            page_size: c.page_size,
+            root_hint: c.root_hint,
+            sort: c.sort,
+            weights: c.weights,
+            filter: c.filter,
+            prev: Some((c.prev_total, c.fingerprint)),
+        }
     } else {
         let Some((pattern, rest)) = parsed.positionals.split_first() else {
             usage();
@@ -808,19 +812,31 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         if let Err(code) = check_sort(parsed.sort, parsed.weights) {
             return code;
         }
-        (
-            pattern.to_string(),
-            parsed.opts,
-            parsed.mode,
-            None,
-            parsed.page_size.unwrap_or(compact::DEFAULT_PAGE_SIZE),
-            rest.first().map(|s| s.to_string()),
-            parsed.sort,
-            parsed.weights.map(str::to_string),
-            parsed.filter,
-            None,
-        )
+        CompactQuery {
+            pattern: pattern.to_string(),
+            opts: parsed.opts,
+            mode: parsed.mode,
+            start_after: None,
+            page_size: parsed.page_size.unwrap_or(compact::DEFAULT_PAGE_SIZE),
+            root_hint: rest.first().map(|s| s.to_string()),
+            sort: parsed.sort,
+            weights: parsed.weights.map(str::to_string),
+            filter: parsed.filter,
+            prev: None,
+        }
     };
+    let CompactQuery {
+        pattern,
+        opts,
+        mode,
+        start_after,
+        page_size,
+        root_hint,
+        sort,
+        weights,
+        filter,
+        prev,
+    } = plan;
 
     // `--sort=weight`: strip `<label>` annotations to get the plain pattern that is actually searched
     // (so the match set stays ripgrep's), and build a ranker. For every other key `weights` is None,

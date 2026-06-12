@@ -316,8 +316,11 @@ fn put_str_list(buf: &mut Vec<u8>, items: &[String]) {
 }
 
 fn take_str_list(cur: &mut &[u8]) -> Result<Vec<String>> {
+    // Don't pre-allocate from the untrusted count: a corrupt frame could name a huge `n` and OOM
+    // before `take_bytes` fails on the (short) body. Growing as we read bounds the allocation to what
+    // the frame actually carries.
     let n = take_u32(cur)? as usize;
-    let mut v = Vec::with_capacity(n);
+    let mut v = Vec::new();
     for _ in 0..n {
         v.push(String::from_utf8(take_bytes(cur)?)?);
     }
