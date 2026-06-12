@@ -58,6 +58,35 @@ searcher emits the complement), and `--hidden`/`--no-ignore` want files the inde
 fallback walk is rebuilt with those toggles — see [`indexing.md`](indexing.md)). Output stays
 byte-for-byte `rg`'s; only the index speedup is forgone.
 
+### Future: candidates ∪ delta-walk (accelerate `--hidden`/`--no-ignore`)
+
+`-v` inherently needs every file, so its full scan is unavoidable. But `--hidden`/`--no-ignore` only
+*add* files to the search set — the default-walk files (which the index already covers) plus a
+**delta**: the hidden/ignored files the toggled walk includes and the default walk excludes. Throwing
+the whole index away to re-grep the entire tree is wasteful when the delta is small (often it isn't —
+`--no-ignore` over a giant `node_modules` is the pathological case — but for `--hidden` the delta is
+usually tiny). A sound accelerated plan:
+
+1. **Trigram candidates** for the *indexed* (default) set — the normal `index.candidates(query)`.
+2. **Delta walk:** walk the tree with the toggle on; a file already in the index (`path_to_id`,
+   `live`) is covered by step 1, so keep only the rest — the unindexed delta.
+3. **Confirm** over `candidates ∪ delta`: the delta files are unindexed, so they carry no trigram
+   constraint and are all searched (sound); the indexed slice stays narrowed to its trigram hits.
+
+**Soundness.** The toggled walk yields `default-set ∪ delta`. The index soundly narrows the
+default-set half (never drops a match); the delta half is searched in full. So every file the toggled
+walk would match is searched — same guarantee as today, fewer files grepped.
+
+**Cost.** Still pays the *walk* (you must enumerate the delta), but saves the *grep* on every indexed
+non-candidate file — the dominant cost. Net win whenever the indexed source tree dwarfs the delta.
+
+**Where it runs / open questions.** This moves `--hidden`/`--no-ignore` back onto the daemon (it owns
+the index and `path_to_id`), as a new candidates-∪-delta mode in `server::content_search` rather than
+the in-process `full_scan`. Open: tombstoned-but-ignored files (in `path_to_id`, `live = false`) must
+count as delta; whether the walk cost alone makes `--no-ignore` over a huge ignored tree not worth it
+(maybe gate the optimization on delta size); and the daemon round-trip vs. the current zero-hop
+in-process scan for tiny repos. Until built, the simple force-fallback above is correct and honest.
+
 ## The confirm step
 
 `src/confirm.rs`
