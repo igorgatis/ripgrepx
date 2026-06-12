@@ -21,7 +21,7 @@ selective. See the [benchmarks](#benchmarks) for the full numbers.
 
 ## Install
 
-`rgx` is one self-contained ~4 MB binary — ripgrep's engine is linked in, so you do **not** need `rg`
+`rgx` is one self-contained ~3 MB binary — ripgrep's engine is linked in, so you do **not** need `rg`
 installed. Pick whichever channel you prefer:
 
 ```sh
