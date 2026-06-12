@@ -7,6 +7,8 @@ ripgrep does the matching. Correctness is ripgrep's, speed is ours.
 
 - [`README.md`](README.md) — what it is, install & use.
 - [`docs/design.md`](docs/design.md) — mission, model, correctness contract, open questions.
+- [`docs/ripgrep-ignore-and-scope.md`](docs/ripgrep-ignore-and-scope.md) — parity spec: how ripgrep
+  decides ignores and scope (from the `ignore` crate source), and what it dictates for index reuse.
 - [`docs/cli.md`](docs/cli.md) — command surface and the `--server` gate.
 - [`docs/mcp.md`](docs/mcp.md) — agent-facing MCP tools.
 - [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.

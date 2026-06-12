@@ -12,7 +12,7 @@ use anyhow::Result;
 use grep::printer::StandardBuilder;
 use grep::regex::{RegexMatcher, RegexMatcherBuilder};
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder};
-use ignore::{WalkBuilder, WalkState};
+use ignore::WalkState;
 use rayon::prelude::*;
 use termcolor::NoColor;
 
@@ -122,7 +122,7 @@ pub fn full_scan(
     let matcher = build_matcher(pattern, opts)?;
     let matcher = &matcher;
     let sink = &sink;
-    WalkBuilder::new(root).build_parallel().run(|| {
+    crate::index::walk_builder(root).build_parallel().run(|| {
         // Build the searcher and printer once per walk thread (not per file): for a match-everything
         // query over tens of thousands of files, per-file printer construction dominates otherwise.
         let mut searcher = build_searcher(opts);

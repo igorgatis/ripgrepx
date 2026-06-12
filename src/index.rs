@@ -377,10 +377,22 @@ fn read_u64(r: &mut impl Read) -> std::io::Result<u64> {
     Ok(u64::from_le_bytes(b))
 }
 
+/// A `WalkBuilder` that enumerates exactly the files `rg` would under `root`. The crate defaults
+/// already match ripgrep (skip hidden; honor `.gitignore`/`.ignore`/`.git/info/exclude` and the
+/// global gitignore; read parent ignores; don't follow symlinks); the one thing the `rg` binary adds
+/// on top of the crate is the `.rgignore` custom ignore name. Both the index walk and the `full_scan`
+/// fallback go through here so they can't drift from `rg` — or from each other. See
+/// `docs/ripgrep-ignore-and-scope.md`.
+pub fn walk_builder(root: &Path) -> WalkBuilder {
+    let mut b = WalkBuilder::new(root);
+    b.add_custom_ignore_filename(".rgignore");
+    b
+}
+
 /// Collect the files ripgrep would search under `root`, sorted so file IDs are deterministic.
 pub fn walk_files(root: &Path) -> Vec<PathBuf> {
     let found = Mutex::new(Vec::<PathBuf>::new());
-    WalkBuilder::new(root).build_parallel().run(|| {
+    walk_builder(root).build_parallel().run(|| {
         let found = &found;
         Box::new(move |res| {
             if let Ok(entry) = res
@@ -541,6 +553,20 @@ mod tests {
         // A fallback query (no usable trigram) makes every live file a candidate, incl. bin.dat.
         let fb = names(idx.candidates(&Query::for_pattern("a.", Options::default())));
         assert_eq!(fb, vec!["a.txt", "b.txt", "bin.dat", "c.txt"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn walk_honors_rgignore_like_ripgrep() {
+        let tmp = std::env::temp_dir().join(format!("rgx_rgignore_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write(&tmp, "a.txt", b"NEEDLE\n");
+        write(&tmp, "b.txt", b"NEEDLE\n");
+        write(&tmp, ".rgignore", b"b.txt\n");
+        let files = walk_files(&tmp);
+        let got = names(files.iter().map(PathBuf::as_path).collect());
+        assert_eq!(got, vec!["a.txt"]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
