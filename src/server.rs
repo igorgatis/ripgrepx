@@ -48,10 +48,33 @@ struct Shared {
     persist: AtomicBool,
     /// Exit after this long with no client request, or `None` to stay resident.
     idle_timeout: Option<Duration>,
-    /// Last time a client request arrived; drives the idle reaper.
+    /// Last time a request finished (or arrived); drives the idle reaper.
     last_active: Mutex<Instant>,
-    /// Attached `watch` subscribers; a live watcher keeps the daemon from idling out.
-    watchers: AtomicUsize,
+    /// Requests currently being served; any in-flight request (search, find, status, or a long-lived
+    /// watch) keeps the idle reaper from exiting. Held via [`ActiveRequest`] so a panicking handler
+    /// can't leak the count.
+    in_flight: AtomicUsize,
+}
+
+/// Marks a request in flight for its whole lifetime. Drop decrements and stamps `last_active`, so the
+/// reaper never exits mid-request and the idle clock resets when the request finishes — panic-safe,
+/// since Drop runs even when a handler unwinds.
+struct ActiveRequest<'a>(&'a Shared);
+
+impl<'a> ActiveRequest<'a> {
+    fn new(shared: &'a Shared) -> Self {
+        shared.in_flight.fetch_add(1, Ordering::SeqCst);
+        shared.touch();
+        ActiveRequest(shared)
+    }
+}
+
+impl Drop for ActiveRequest<'_> {
+    fn drop(&mut self) {
+        // Stamp before decrementing so the reaper, on seeing the count hit zero, reads a fresh time.
+        self.0.touch();
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Shared {
@@ -74,9 +97,23 @@ impl Shared {
         self.seq_cv.notify_all();
     }
 
-    /// Record that a client just made a request, resetting the idle clock.
+    /// Reset the idle clock to now.
     fn touch(&self) {
         *self.last_active.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+    }
+
+    /// Mark the index ready to serve and start the idle clock from now, so a daemon that just
+    /// finished a long cold build gets a full idle window before the reaper can exit it.
+    fn mark_ready(&self) {
+        self.touch();
+        self.ready.store(true, Ordering::SeqCst);
+    }
+
+    /// Persist the index to its snapshot unless this index is RAM-only (`persist` is false).
+    fn maybe_save(&self, idx: &Index) {
+        if self.persist.load(Ordering::SeqCst) {
+            let _ = idx.save(&self.snapshot);
+        }
     }
 
     /// Block until the change counter moves past `last` or the heartbeat elapses; return the latest.
@@ -115,7 +152,7 @@ pub fn run(root: PathBuf) -> Result<()> {
         persist: AtomicBool::new(true),
         idle_timeout: cfg.idle_timeout(),
         last_active: Mutex::new(Instant::now()),
-        watchers: AtomicUsize::new(0),
+        in_flight: AtomicUsize::new(0),
     });
 
     spawn_indexer(shared.clone());
@@ -129,6 +166,9 @@ pub fn run(root: PathBuf) -> Result<()> {
         };
         let shared = shared.clone();
         std::thread::spawn(move || {
+            // Count the whole connection as in flight (covering the blocking read), so the reaper
+            // can't exit out from under a request — including one accepted but not yet parsed.
+            let _active = ActiveRequest::new(&shared);
             let _ = handle(conn, &shared);
         });
     }
@@ -140,12 +180,12 @@ fn spawn_indexer(shared: Arc<Shared>) {
     std::thread::spawn(move || {
         if let Ok(idx) = Index::load(&shared.snapshot) {
             *shared.write_index() = idx;
-            shared.ready.store(true, Ordering::SeqCst);
+            shared.mark_ready();
             shared.bump();
             // catch changes made while the daemon was down
             let mut idx = shared.write_index();
             idx.reconcile(&shared.root);
-            let _ = idx.save(&shared.snapshot);
+            shared.maybe_save(&idx);
             drop(idx);
             shared.bump();
         } else {
@@ -157,13 +197,13 @@ fn spawn_indexer(shared: Arc<Shared>) {
             let built = Index::from_paths(&paths, &shared.indexed);
             // A build cheap enough to redo on the next start stays RAM-only: skip the snapshot (and
             // its per-reconcile rewrites), trading a sub-threshold cold rebuild for the disk.
-            let persist = started.elapsed() >= shared.persist_threshold;
-            shared.persist.store(persist, Ordering::SeqCst);
-            if persist {
-                let _ = built.save(&shared.snapshot);
-            }
+            shared.persist.store(
+                started.elapsed() >= shared.persist_threshold,
+                Ordering::SeqCst,
+            );
+            shared.maybe_save(&built);
             *shared.write_index() = built;
-            shared.ready.store(true, Ordering::SeqCst);
+            shared.mark_ready();
             shared.bump();
         }
     });
@@ -192,9 +232,7 @@ fn spawn_watcher(shared: Arc<Shared>) {
             }
             let mut idx = shared.write_index();
             if idx.reconcile(&shared.root) > 0 {
-                if shared.persist.load(Ordering::SeqCst) {
-                    let _ = idx.save(&shared.snapshot);
-                }
+                shared.maybe_save(&idx);
                 drop(idx);
                 shared.bump();
             }
@@ -202,8 +240,9 @@ fn spawn_watcher(shared: Arc<Shared>) {
     });
 }
 
-/// Exit the daemon once it has gone `idle_timeout` without a client request (freeing its RAM; the
-/// next search respawns it). A live `watch` subscriber counts as activity. No-op when disabled.
+/// Exit the daemon once it has gone `idle_timeout` without a request (freeing its RAM; the next
+/// search respawns it). Never exits before the first build is ready or while a request is in flight.
+/// No-op when disabled.
 fn spawn_idle_reaper(shared: Arc<Shared>) {
     let Some(timeout) = shared.idle_timeout else {
         return;
@@ -212,7 +251,8 @@ fn spawn_idle_reaper(shared: Arc<Shared>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(tick);
-            if shared.watchers.load(Ordering::SeqCst) > 0 {
+            // Don't reap a daemon that is still doing its first build, or one mid-request.
+            if !shared.ready.load(Ordering::SeqCst) || shared.in_flight.load(Ordering::SeqCst) > 0 {
                 continue;
             }
             let idle = shared
@@ -230,7 +270,6 @@ fn spawn_idle_reaper(shared: Arc<Shared>) {
 
 fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
     let req = proto::read_request(&mut conn)?;
-    shared.touch();
     match req {
         // Errors here are essentially "client went away mid-stream"; ignore so we still attempt the
         // stream terminator below — a request that produced N frames then errored should not look
@@ -265,12 +304,11 @@ fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
 /// The blocking wait holds no index lock, and rendering only touches the (cheap-while-building)
 /// resident index, so an attached watcher does not slow indexing.
 fn watch(shared: &Shared, conn: &mut Stream) -> Result<()> {
-    shared.watchers.fetch_add(1, Ordering::SeqCst);
+    // The connection's ActiveRequest guard (held in the accept loop) keeps the daemon alive for the
+    // whole subscription and resets the idle clock when it ends, so nothing extra is needed here.
     let mut last = 0;
     loop {
         if proto::write_data(conn, &status(shared)).is_err() {
-            shared.watchers.fetch_sub(1, Ordering::SeqCst);
-            shared.touch(); // a just-ended watch counts as recent activity, not stale idle time
             return Ok(()); // client went away
         }
         last = shared.wait_change(last);

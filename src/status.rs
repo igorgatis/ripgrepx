@@ -141,18 +141,26 @@ mod tests {
 
     #[test]
     fn ram_only_status_reports_no_snapshot() {
-        let block = Status {
-            root: Path::new("/repo"),
-            snapshot: Path::new("/cache/rgx/abc/index.bin"),
-            running: true,
-            ram_only: true,
-            state: Some("ready".into()),
-            files: Some(120),
-            trigrams: Some(5000),
-            memory_bytes: Some(1024),
-        }
-        .render();
-        assert!(block.contains("ram-only"));
-        assert!(!block.contains("index.bin"));
+        let snapshot = Path::new("/cache/rgx/abc/index.bin");
+        let status = |ram_only| {
+            Status {
+                root: Path::new("/repo"),
+                snapshot,
+                running: true,
+                ram_only,
+                state: Some("ready".into()),
+                files: Some(120),
+                trigrams: Some(5000),
+                memory_bytes: Some(1024),
+            }
+            .render()
+        };
+
+        let ram = status(true);
+        assert!(ram.contains("ram-only (rebuilt on start)"));
+        // The snapshot path/age is suppressed in RAM-only mode but present when persisted, so the
+        // path string genuinely distinguishes the two (not a coincidence of the chosen path).
+        assert!(!ram.contains(&snapshot.display().to_string()));
+        assert!(status(false).contains(&snapshot.display().to_string()));
     }
 }
