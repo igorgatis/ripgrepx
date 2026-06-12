@@ -61,7 +61,7 @@ tools. The recommended setup per agent:
 | **Claude Code** | `rgx --agent install` | `claude mcp add rgx -- rgx --agent mcp` |
 | **Codex** | `rgx --agent skill >> AGENTS.md` | `codex mcp add rgx -- rgx --agent mcp` |
 | **Cursor** | `rgx --agent skill > .cursor/rules/rgx.md` | add the JSON below to `.cursor/mcp.json` |
-| **Gemini CLI** | `rgx --agent skill >> GEMINI.md` | `gemini mcp add rgx rgx --agent mcp` |
+| **Gemini CLI** | `rgx --agent skill >> GEMINI.md` | `gemini mcp add rgx -- rgx --agent mcp` |
 | **VS Code (Copilot)** | `rgx --agent skill >> .github/copilot-instructions.md` | `code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'` |
 | **Any MCP client** | paste `rgx --agent skill` into its instructions | the JSON below |
 

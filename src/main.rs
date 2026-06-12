@@ -124,7 +124,7 @@ rgx --agent — integrate rgx with AI coding agents (Claude Code, Codex, or any 
 MCP setup — register `rgx --agent mcp` as a stdio server (content_search, file_search, status):
   Claude Code   claude mcp add rgx -- rgx --agent mcp
   Codex         codex mcp add rgx -- rgx --agent mcp
-  Gemini CLI    gemini mcp add rgx rgx --agent mcp
+  Gemini CLI    gemini mcp add rgx -- rgx --agent mcp
   VS Code       code --add-mcp '{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}'
   Cursor/other  add to the client's MCP config (e.g. .cursor/mcp.json):
                   \"mcpServers\": { \"rgx\": { \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] } }

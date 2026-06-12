@@ -50,7 +50,7 @@ fn print_mcp_instructions() {
          (content_search, file_search, status):\n\
          \n  Claude Code:  claude mcp add rgx -- rgx --agent mcp\n\
          \n  Codex:        codex mcp add rgx -- rgx --agent mcp\n\
-         \n  Gemini CLI:   gemini mcp add rgx rgx --agent mcp\n\
+         \n  Gemini CLI:   gemini mcp add rgx -- rgx --agent mcp\n\
          \n  VS Code:      code --add-mcp '{{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}}'\n\
          \n  Cursor/other: add to the client's MCP config (e.g. .cursor/mcp.json):\n\
          \n      \"mcpServers\": {{ \"rgx\": {{ \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] }} }}"

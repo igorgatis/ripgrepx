@@ -14,7 +14,7 @@
 set -eu
 
 REPO="igorgatis/ripgrepx"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+BIN_DIR="${BIN_DIR:-${HOME:?set BIN_DIR or HOME}/.local/bin}"
 
 say() { printf 'rgx-install: %s\n' "$1" >&2; }
 die() { say "error: $1"; exit 1; }
@@ -65,8 +65,12 @@ tar -xzf "$tmp/$asset" -C "$tmp" || die "could not extract $asset"
 [ -f "$tmp/rgx" ] || die "archive did not contain rgx"
 
 mkdir -p "$BIN_DIR"
-install -m 0755 "$tmp/rgx" "$BIN_DIR/rgx" 2>/dev/null || {
-  cp "$tmp/rgx" "$BIN_DIR/rgx" && chmod 0755 "$BIN_DIR/rgx"
+# Install via a sibling temp + rename so the replace is atomic and, if a daemon is already running
+# from BIN_DIR, it doesn't hit ETXTBSY (the live process keeps the old inode).
+tmpbin="$BIN_DIR/.rgx.$$.tmp"
+cp "$tmp/rgx" "$tmpbin" && chmod 0755 "$tmpbin" && mv -f "$tmpbin" "$BIN_DIR/rgx" || {
+  rm -f "$tmpbin"
+  die "could not install to $BIN_DIR (check permissions, or set BIN_DIR)"
 }
 say "installed rgx $ver -> $BIN_DIR/rgx"
 
@@ -74,4 +78,5 @@ case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "note: $BIN_DIR is not on your PATH; add it, e.g. export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
-"$BIN_DIR/rgx" --version 2>/dev/null || true
+# Smoke-test the freshly installed binary; show the loader error (arch/libc mismatch) if it can't run.
+"$BIN_DIR/rgx" --version || say "warning: installed, but '$BIN_DIR/rgx --version' did not run cleanly"

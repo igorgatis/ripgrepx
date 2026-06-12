@@ -14,7 +14,7 @@ Register `rgx --agent mcp` as a stdio MCP server with your agent (recommended se
 ```sh
 claude mcp add rgx -- rgx --agent mcp                                              # Claude Code
 codex mcp add rgx -- rgx --agent mcp                                               # Codex
-gemini mcp add rgx rgx --agent mcp                                                 # Gemini CLI
+gemini mcp add rgx -- rgx --agent mcp                                              # Gemini CLI
 code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'           # VS Code (Copilot)
 ```
 
