@@ -89,10 +89,16 @@ fn benches(c: &mut Criterion) {
     c.bench_function("confirm", |b| {
         b.iter(|| {
             let mut n = 0usize;
-            confirm::search_streaming("trigram", &refs, SearchOptions::default(), |chunk| {
-                n += chunk.len();
-                Ok(())
-            })
+            confirm::search_streaming(
+                "trigram",
+                &refs,
+                &corpus,
+                SearchOptions::default(),
+                |chunk| {
+                    n += chunk.len();
+                    Ok(())
+                },
+            )
             .unwrap();
             n
         })

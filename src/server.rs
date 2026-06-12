@@ -329,7 +329,7 @@ fn content_search(
         let paths = crate::candidate_paths(&shared.read_index(), pattern, opts);
         let effective = crate::effective_pattern(pattern, opts);
         let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-        crate::confirm::search_streaming(&effective, &refs, opts, |chunk| {
+        crate::confirm::search_streaming(&effective, &refs, &shared.root, opts, |chunk| {
             proto::write_data(&mut *conn, chunk)
         })
     } else {

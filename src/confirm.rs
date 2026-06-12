@@ -56,19 +56,36 @@ fn build_searcher(opts: SearchOptions) -> Searcher {
         .build()
 }
 
-/// Render one file's matches into `buf` (cleared first), exactly as `rg` would print them.
-fn search_one(searcher: &mut Searcher, matcher: &RegexMatcher, path: &Path, buf: &mut Vec<u8>) {
+/// The path to print for `path`: relative to `root` (so output matches `rg`'s cwd-relative paths and
+/// cursors stay small) when `path` is under it, else `path` unchanged. The file is still read from the
+/// real `path`.
+fn display_path<'a>(path: &'a Path, root: &Path) -> &'a Path {
+    path.strip_prefix(root).unwrap_or(path)
+}
+
+/// Render one file's matches into `buf` (cleared first), exactly as `rg` would print them. The file is
+/// read from `path` but printed relative to `root`.
+fn search_one(
+    searcher: &mut Searcher,
+    matcher: &RegexMatcher,
+    path: &Path,
+    root: &Path,
+    buf: &mut Vec<u8>,
+) {
     buf.clear();
     let mut printer = StandardBuilder::new().build(NoColor::new(&mut *buf));
-    let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, path));
+    let shown = display_path(path, root);
+    let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
 }
 
 /// Search a known `paths` set for `pattern` (already made effective — escaped for `-F` by the
 /// caller), emitting each file's rendered output via `emit`, in the order the paths are given
-/// (callers pass them sorted, so output is deterministic). Memory stays bounded to one batch.
+/// (callers pass them sorted, so output is deterministic). Paths are printed relative to `root`.
+/// Memory stays bounded to one batch.
 pub fn search_streaming(
     pattern: &str,
     paths: &[&Path],
+    root: &Path,
     opts: SearchOptions,
     mut emit: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
@@ -79,7 +96,7 @@ pub fn search_streaming(
             .map_init(
                 || (build_searcher(opts), Vec::new()),
                 |(searcher, buf), path| {
-                    search_one(searcher, &matcher, path, buf);
+                    search_one(searcher, &matcher, path, root, buf);
                     std::mem::take(buf)
                 },
             )
@@ -115,7 +132,8 @@ pub fn full_scan(
                 && entry.file_type().is_some_and(|t| t.is_file())
             {
                 let path = entry.path();
-                let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, path));
+                let shown = display_path(path, root);
+                let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
                 let buf = printer.get_mut().get_mut();
                 if !buf.is_empty() {
                     sink(buf);
@@ -129,9 +147,9 @@ pub fn full_scan(
 }
 
 /// Collecting convenience over [`search_streaming`] (used by tests and small in-process callers).
-pub fn search(pattern: &str, paths: &[&Path], opts: SearchOptions) -> Result<Vec<u8>> {
+pub fn search(pattern: &str, paths: &[&Path], root: &Path, opts: SearchOptions) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    search_streaming(pattern, paths, opts, |c| {
+    search_streaming(pattern, paths, root, opts, |c| {
         out.extend_from_slice(c);
         Ok(())
     })?;
@@ -150,10 +168,17 @@ mod tests {
         let p = tmp.join("f.txt");
         std::fs::write(&p, b"alpha\nbeta NEEDLE gamma\ndelta\n").unwrap();
 
-        let out = search("NEEDLE", &[p.as_path()], SearchOptions::default()).unwrap();
+        let out = search("NEEDLE", &[p.as_path()], &tmp, SearchOptions::default()).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains(":2:beta NEEDLE gamma"), "got: {text:?}");
+        assert!(
+            text.starts_with("f.txt:2:beta NEEDLE gamma"),
+            "got: {text:?}"
+        );
         assert!(!text.contains("alpha"));
+        assert!(
+            !text.contains(tmp.to_str().unwrap()),
+            "path should be relative: {text:?}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

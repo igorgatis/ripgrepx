@@ -46,8 +46,9 @@ a denser view):
 - **Paged by an opaque cursor** — a page of matches at a time; when more remain the footer prints the
   exact next command (`next: rgx --compact --cursor '<token>'`). The cursor carries the entire query
   (pattern + every flag) plus a keyset resume position, so the next page can't drift to a different
-  search and a result set that changed between pages is reported with a `note:` line. Set the page
-  size with `--page-size N` (default 50).
+  search and a result set that changed between pages is reported with a `note:` line. To stay small it
+  stores the query's path scope *relative to the cwd*, so follow the cursor from the same directory.
+  Set the page size with `--page-size N` (default 50).
 - **Orientation modes** — `-l` / `--files-with-matches` lists matching paths only; `-c` / `--count`
   lists `path:count` per file. Both answer "where / how many" in one call instead of a page-walk, and
   both page the same way (by file).

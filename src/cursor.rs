@@ -15,7 +15,7 @@ use crate::confirm::SearchOptions;
 use crate::proto::{pack_opts, unpack_opts};
 
 const KIND: u8 = 0x01;
-const VERSION: u8 = 0x01;
+const VERSION: u8 = 0x02;
 
 /// The compact output shape a cursor paginates over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,9 +41,10 @@ pub struct Cursor {
     pub last_lineno: u64,
     /// `total_matches` when the cursor was minted, so a resume can report "N -> M matches".
     pub prev_total: usize,
-    /// Fingerprint of the full result set when minted, for staleness detection.
-    pub fingerprint: u64,
-    /// The positional path the query was scoped to (so `--cursor` reproduces the root); None = cwd.
+    /// Low 32 bits of the result-set fingerprint when minted, for (advisory) staleness detection.
+    pub fingerprint: u32,
+    /// The positional path the query was scoped to, relative to the cwd (None = the cwd itself). The
+    /// caller pages from the same directory, so a short relative scope re-resolves the same tree.
     pub root_hint: Option<String>,
 }
 
@@ -65,12 +66,12 @@ pub fn encode(c: &Cursor) -> String {
         Mode::Count => 2,
     };
     let mut b = vec![KIND, VERSION, mode, pack_opts(&c.opts)];
-    put_u32(&mut b, c.opts.before_context as u32);
-    put_u32(&mut b, c.opts.after_context as u32);
-    put_u32(&mut b, c.page_size as u32);
-    put_u64(&mut b, c.prev_total as u64);
-    put_u64(&mut b, c.fingerprint);
-    put_u64(&mut b, c.last_lineno);
+    put_varint(&mut b, c.opts.before_context as u64);
+    put_varint(&mut b, c.opts.after_context as u64);
+    put_varint(&mut b, c.page_size as u64);
+    put_varint(&mut b, c.prev_total as u64);
+    put_varint(&mut b, c.fingerprint as u64);
+    put_varint(&mut b, c.last_lineno);
     put_opt(&mut b, c.last_path.as_deref());
     put_opt(&mut b, c.root_hint.as_deref());
     put_bytes(&mut b, c.pattern.as_bytes());
@@ -95,13 +96,13 @@ pub fn decode(s: &str) -> Result<Cursor> {
         other => bail!("unknown cursor mode {other}"),
     };
     let packed = take_u8(&mut cur)?;
-    let before = take_u32(&mut cur)?;
-    let after = take_u32(&mut cur)?;
+    let before = take_varint(&mut cur)? as u32;
+    let after = take_varint(&mut cur)? as u32;
     let opts = unpack_opts(packed, before, after);
-    let page_size = take_u32(&mut cur)? as usize;
-    let prev_total = take_u64(&mut cur)? as usize;
-    let fingerprint = take_u64(&mut cur)?;
-    let last_lineno = take_u64(&mut cur)?;
+    let page_size = take_varint(&mut cur)? as usize;
+    let prev_total = take_varint(&mut cur)? as usize;
+    let fingerprint = take_varint(&mut cur)? as u32;
+    let last_lineno = take_varint(&mut cur)?;
     let last_path = take_opt(&mut cur)?;
     let root_hint = take_opt(&mut cur)?;
     let pattern = String::from_utf8(take_bytes(&mut cur)?)?;
@@ -118,16 +119,37 @@ pub fn decode(s: &str) -> Result<Cursor> {
     })
 }
 
-fn put_u32(buf: &mut Vec<u8>, n: u32) {
-    buf.extend_from_slice(&n.to_le_bytes());
+/// LEB128 unsigned varint: small values cost 1 byte, keeping a typical cursor short.
+fn put_varint(buf: &mut Vec<u8>, mut n: u64) {
+    loop {
+        let byte = (n & 0x7f) as u8;
+        n >>= 7;
+        if n == 0 {
+            buf.push(byte);
+            return;
+        }
+        buf.push(byte | 0x80);
+    }
 }
 
-fn put_u64(buf: &mut Vec<u8>, n: u64) {
-    buf.extend_from_slice(&n.to_le_bytes());
+fn take_varint(cur: &mut &[u8]) -> Result<u64> {
+    let mut result: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        let b = take_u8(cur)?;
+        if shift >= 64 {
+            bail!("malformed cursor varint");
+        }
+        result |= u64::from(b & 0x7f) << shift;
+        if b & 0x80 == 0 {
+            return Ok(result);
+        }
+        shift += 7;
+    }
 }
 
 fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) {
-    put_u32(buf, b.len() as u32);
+    put_varint(buf, b.len() as u64);
     buf.extend_from_slice(b);
 }
 
@@ -149,26 +171,8 @@ fn take_u8(cur: &mut &[u8]) -> Result<u8> {
     Ok(b)
 }
 
-fn take_u32(cur: &mut &[u8]) -> Result<u32> {
-    if cur.len() < 4 {
-        bail!("truncated cursor");
-    }
-    let (head, rest) = cur.split_at(4);
-    *cur = rest;
-    Ok(u32::from_le_bytes(head.try_into().unwrap()))
-}
-
-fn take_u64(cur: &mut &[u8]) -> Result<u64> {
-    if cur.len() < 8 {
-        bail!("truncated cursor");
-    }
-    let (head, rest) = cur.split_at(8);
-    *cur = rest;
-    Ok(u64::from_le_bytes(head.try_into().unwrap()))
-}
-
 fn take_bytes(cur: &mut &[u8]) -> Result<Vec<u8>> {
-    let n = take_u32(cur)? as usize;
+    let n = take_varint(cur)? as usize;
     if cur.len() < n {
         bail!("truncated cursor");
     }
@@ -202,7 +206,7 @@ mod tests {
             last_path: Some("src/café.rs".into()),
             last_lineno: 42,
             prev_total: 421,
-            fingerprint: 0xdead_beef_1234,
+            fingerprint: 0xdead_beef,
             root_hint: Some("src/".into()),
         }
     }

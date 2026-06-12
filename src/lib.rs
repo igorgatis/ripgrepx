@@ -82,6 +82,7 @@ pub fn candidate_paths(
 /// and ripgrep confirms over exactly that set. There is no separate "scan the tree" branch.
 pub fn stream_search(
     index: &Index,
+    root: &Path,
     pattern: &str,
     opts: SearchOptions,
     emit: impl FnMut(&[u8]) -> Result<()>,
@@ -89,7 +90,7 @@ pub fn stream_search(
     let effective = effective_pattern(pattern, opts);
     let query = Query::for_pattern(&effective, query_options(opts));
     let paths = index.candidates(&query);
-    confirm::search_streaming(&effective, &paths, opts, emit)
+    confirm::search_streaming(&effective, &paths, root, opts, emit)
 }
 
 /// Pipelined full-tree walk+search (matching ripgrep's model), streaming through `sink`. Used by the
@@ -135,9 +136,9 @@ pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result
 }
 
 /// Collecting convenience over [`stream_search`] (used in tests).
-pub fn search(index: &Index, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
+pub fn search(index: &Index, root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    stream_search(index, pattern, opts, |c| {
+    stream_search(index, root, pattern, opts, |c| {
         out.extend_from_slice(c);
         Ok(())
     })?;

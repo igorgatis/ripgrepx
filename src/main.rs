@@ -593,10 +593,9 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     if let Some(note) = page.staleness_note(prev) {
         let _ = writeln!(out, "note: {note}");
     }
-    // Store the RESOLVED (absolute) root, not the raw positional, so following the cursor from a
-    // different working directory resolves the same tree (resolve_root is idempotent on an absolute
-    // path) rather than re-interpreting a relative path against the new cwd.
-    let root_hint = Some(root.to_string_lossy().into_owned());
+    // Carry the original positional scope (a short relative path, or None for the cwd) rather than the
+    // resolved absolute root: the caller pages from the same directory, so it re-resolves the same
+    // tree and the cursor stays small. `root_hint` is already that scope from the branches above.
     if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint) {
         let _ = writeln!(
             out,

@@ -137,7 +137,7 @@ struct Query {
     start_after: Option<(String, u64)>,
     page_size: usize,
     /// `(total, fingerprint)` when resuming a cursor, for the staleness note.
-    prev: Option<(usize, u64)>,
+    prev: Option<(usize, u32)>,
 }
 
 fn arg_bool(args: Option<&Value>, key: &str) -> bool {

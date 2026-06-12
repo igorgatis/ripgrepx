@@ -77,16 +77,17 @@ impl Page {
             last_path: self.last_key.as_ref().map(|(p, _)| p.clone()),
             last_lineno: self.last_key.as_ref().map_or(0, |(_, l)| *l),
             prev_total: self.total_matches,
-            fingerprint: self.fingerprint,
+            fingerprint: self.fingerprint as u32,
             root_hint,
         })
     }
 
     /// A note for the caller to surface when resuming a cursor whose result set has since changed
-    /// (fingerprint mismatch), or `None`. `prev` is the cursor's `(prev_total, fingerprint)`.
-    pub fn staleness_note(&self, prev: Option<(usize, u64)>) -> Option<String> {
+    /// (fingerprint mismatch), or `None`. `prev` is the cursor's `(prev_total, fingerprint)`; the
+    /// fingerprint is the low 32 bits, so compare against this page's truncated to match.
+    pub fn staleness_note(&self, prev: Option<(usize, u32)>) -> Option<String> {
         match prev {
-            Some((prev_total, prev_fp)) if prev_fp != self.fingerprint => Some(format!(
+            Some((prev_total, prev_fp)) if prev_fp != self.fingerprint as u32 => Some(format!(
                 "result set changed since the previous page ({prev_total} -> {} matches)",
                 self.total_matches
             )),
