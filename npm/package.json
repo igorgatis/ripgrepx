@@ -1,6 +1,6 @@
 {
   "name": "ripgrepx",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Instant ripgrep via a persistent index — token-frugal code search for AI agents and the terminal. Installs the `rgx` command.",
   "bin": {
     "rgx": "bin/rgx.js"
