@@ -3,8 +3,8 @@
 //! name lookup. See `docs/cli.md`.
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
-//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -A/-B/-C,
-//! -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, and `--sort`/`--sortr`);
+//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -e/--regexp,
+//! -A/-B/-C, -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, and `--sort`/`--sortr`);
 //! `--weights` is rgx's own (feeds `--sort=weight`).
 
 use std::io::Write;
@@ -65,7 +65,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -v -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
+         flags: -i -s -w -n -F -U -v -e<pat> -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -84,9 +84,10 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --version                                    print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -n -F -U -v -A<n> -B<n> -C<n> -g/--glob -t/--type -T/--type-not
---hidden --no-ignore --. rgx's own modes are recognized only as the first token. Examples:
-    rgx 'fn \\w+_total' src/    rgx -t rust TODO    rgx -g '*.ts' useAuth    rgx -- --server
+(anywhere, like rg): -i -s -w -n -F -U -v -e/--regexp -A<n> -B<n> -C<n> -g/--glob -t/--type
+-T/--type-not --hidden --no-ignore --. rgx's own modes are recognized only as the first token.
+Examples:
+    rgx 'fn \\w+_total' src/    rgx -t rust TODO    rgx -e foo -e bar    rgx -e --server (literal)
 
 ORDER results like `rg --sort` — `--sort=KEY` (asc) / `--sortr=KEY` (desc), KEY = path | modified |
 accessed | created (file metadata) | weight (relevance). For weight, declare branch weights with
@@ -404,6 +405,9 @@ struct ParsedSearch<'a> {
     sort: SortSpec,
     weights: Option<&'a str>,
     filter: FilterSpec,
+    /// `-e`/`--regexp` patterns (repeatable, OR'd). When non-empty, the positionals are all paths and
+    /// there is no positional pattern (ripgrep's rule).
+    patterns: Vec<&'a str>,
     mode: Mode,
     positionals: Vec<&'a str>,
 }
@@ -416,6 +420,7 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
     let mut sort = SortSpec::default();
     let mut weights: Option<&str> = None;
     let mut filter = FilterSpec::default();
+    let mut patterns: Vec<&str> = Vec::new();
     let mut mode = Mode::Matches;
     let mut only_positional = false; // set by `--`
     let mut i = 0;
@@ -508,6 +513,15 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
                 i += consumed;
                 continue;
             }
+            e if is_value_flag(e, "-e", "--regexp") => {
+                let Some((v, consumed)) = take_value_flag(args, i, "-e", "--regexp") else {
+                    eprintln!("rgx: -e/--regexp needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                patterns.push(v);
+                i += consumed;
+                continue;
+            }
             ctx if ctx.starts_with("-A") || ctx.starts_with("-B") || ctx.starts_with("-C") => {
                 let (n, consumed) = match context_value(args, i) {
                     Some(v) => v,
@@ -541,9 +555,48 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
         sort,
         weights,
         filter,
+        patterns,
         mode,
         positionals,
     })
+}
+
+/// Resolve the search pattern + the paths from the parsed flags, applying ripgrep's `-e` rule: when
+/// any `-e`/`--regexp` is given the positionals are all paths (no positional pattern), and the
+/// patterns are OR'd into one regex. A single pattern passes through unchanged (byte-identical to a
+/// bare search); multiple are joined as `(?:p1)|(?:p2)|…`, with `-F` escaping applied per-pattern and
+/// fixed-strings then cleared (the joined form is a real regex). Returns `(pattern, opts, paths)`.
+fn resolve_pattern<'a>(
+    parsed: &ParsedSearch<'a>,
+) -> Result<(String, SearchOptions, Vec<&'a str>), ExitCode> {
+    let (raw_patterns, paths): (Vec<&str>, Vec<&str>) = if parsed.patterns.is_empty() {
+        match parsed.positionals.split_first() {
+            Some((pat, rest)) => (vec![pat], rest.to_vec()),
+            None => {
+                usage();
+                return Err(ExitCode::from(2));
+            }
+        }
+    } else {
+        (parsed.patterns.clone(), parsed.positionals.clone())
+    };
+    if paths.len() > 1 {
+        eprintln!("rgx: unexpected extra argument {:?}", paths[1]);
+        return Err(ExitCode::from(2));
+    }
+    let mut opts = parsed.opts;
+    let pattern = if raw_patterns.len() == 1 {
+        raw_patterns[0].to_string()
+    } else {
+        let joined = raw_patterns
+            .iter()
+            .map(|p| format!("(?:{})", rgx::effective_pattern(p, opts)))
+            .collect::<Vec<_>>()
+            .join("|");
+        opts.fixed_strings = false; // already escaped per-pattern; the join is a real regex
+        joined
+    };
+    Ok((pattern, opts, paths))
 }
 
 /// Whether `a` is a repeatable value flag in any of its four forms: `-x` / `-xVAL` (short) or
@@ -617,18 +670,11 @@ fn content_cmd(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    let opts = parsed.opts;
-
-    let Some((pattern, rest)) = parsed.positionals.split_first() else {
-        usage();
-        return ExitCode::from(2);
+    let (pattern, opts, paths) = match resolve_pattern(&parsed) {
+        Ok(t) => t,
+        Err(code) => return code,
     };
-    let pattern = pattern.to_string();
-    let path = rest.first().copied();
-    if rest.len() > 1 {
-        eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
-        return ExitCode::from(2);
-    }
+    let path = paths.first().copied();
     let root = resolve_root(path);
 
     // Validate the sort/weights pairing before dispatch — unconditionally, so `--weights` without
@@ -760,6 +806,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             || !parsed.sort.is_noop()
             || parsed.weights.is_some()
             || !parsed.filter.is_empty()
+            || !parsed.patterns.is_empty()
             || parsed.mode != Mode::Matches
             || parsed.opts != SearchOptions::default();
         if !parsed.positionals.is_empty() || stray_flags {
@@ -801,27 +848,23 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             prev: Some((c.prev_total, c.fingerprint)),
         }
     } else {
-        let Some((pattern, rest)) = parsed.positionals.split_first() else {
-            usage();
-            return ExitCode::from(2);
-        };
-        if rest.len() > 1 {
-            eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
-            return ExitCode::from(2);
-        }
         if let Err(code) = check_sort(parsed.sort, parsed.weights) {
             return code;
         }
+        let (pattern, opts, paths) = match resolve_pattern(&parsed) {
+            Ok(t) => t,
+            Err(code) => return code,
+        };
         CompactQuery {
-            pattern: pattern.to_string(),
-            opts: parsed.opts,
+            pattern,
+            opts,
             mode: parsed.mode,
             start_after: None,
             page_size: parsed.page_size.unwrap_or(compact::DEFAULT_PAGE_SIZE),
-            root_hint: rest.first().map(|s| s.to_string()),
+            root_hint: paths.first().map(|s| s.to_string()),
             sort: parsed.sort,
             weights: parsed.weights.map(str::to_string),
-            filter: parsed.filter,
+            filter: parsed.filter.clone(),
             prev: None,
         }
     };
@@ -962,6 +1005,32 @@ mod tests {
         let p = parse_search(&args, false).unwrap();
         assert!(p.opts.invert && p.opts.hidden && p.opts.no_ignore);
         assert_eq!(p.positionals, vec!["needle"]);
+    }
+
+    #[test]
+    fn dash_e_collects_patterns_and_treats_positionals_as_paths() {
+        let args = argv(&["-e", "foo", "-e", "bar", "src/"]);
+        let p = parse_search(&args, false).unwrap();
+        assert_eq!(p.patterns, vec!["foo", "bar"]);
+        assert_eq!(p.positionals, vec!["src/"]);
+        // Multiple -e OR into one regex; with -e present the positional is a path, not the pattern.
+        let (pat, _opts, paths) = resolve_pattern(&p).unwrap();
+        assert_eq!(pat, "(?:foo)|(?:bar)");
+        assert_eq!(paths, vec!["src/"]);
+    }
+
+    #[test]
+    fn single_pattern_passes_through_and_fixed_strings_escapes_each() {
+        // A single -e (or bare positional) is byte-identical to today — no wrapping.
+        let one_args = argv(&["-e", "fn .*"]);
+        let one = parse_search(&one_args, false).unwrap();
+        assert_eq!(resolve_pattern(&one).unwrap().0, "fn .*");
+        // -F with multiple -e escapes each branch and clears fixed-strings (the join is real regex).
+        let many_args = argv(&["-F", "-e", "a.b", "-e", "c+d"]);
+        let many = parse_search(&many_args, false).unwrap();
+        let (pat, opts, _) = resolve_pattern(&many).unwrap();
+        assert_eq!(pat, r"(?:a\.b)|(?:c\+d)");
+        assert!(!opts.fixed_strings);
     }
 
     #[test]
