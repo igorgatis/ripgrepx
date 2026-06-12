@@ -80,10 +80,12 @@ either way, with zero new parsing for the agent.
 
 ## Skill
 
-`rgx --agent install` writes a short agent skill (and prints the MCP setup) that teaches a model to
-prefer these tools over raw `rg`/`find`/`fd`; `rgx --agent skill` prints the same markdown so you can
-paste it into Codex `AGENTS.md` or any other agent's instructions. The skill is version-controlled in
-[`assets/skill.md`](../assets/skill.md) and kept in sync with behavior (see `CLAUDE.md`).
+`rgx --agent install` installs the rgx bundle (the skill that teaches a model to prefer these tools
+over raw `rg`/`grep`/`find`/`fd`, plus the MCP wiring) for each agent — previewing the exact changes
+and asking before it touches anything; `uninstall` reverses it and `list` shows status (see
+[Setup](#setup)). `rgx --agent skill` prints the raw markdown so you can paste it into any agent's
+instructions. The skill is version-controlled in [`assets/skill.md`](../assets/skill.md) and kept in
+sync with behavior (see `CLAUDE.md`).
 
 ## Implementation status
 

@@ -29,7 +29,23 @@ Tooling is managed by [mise](https://mise.jdx.dev). Run via `mise run <task>`:
 - `mise run ci` — fmt-check + lint + test
 
 After `build:install`, kill stale daemons (`pkill -f 'rgx.*server'`) — an old daemon keeps serving the
-previous wire format and returns wrong or empty results.
+previous wire format and returns wrong or empty results. Alternatively, `rgx --server restart` (from
+the repo) replaces just that project's daemon.
+
+## Releasing
+
+Tag-driven: pushing a `vX.Y.Z` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml)
+(GitHub release, prebuilt binaries for every target, and the npm / crates.io / PyPI publishes — each
+self-skips until its token/flag is set). Before tagging, bump the version in **all three** of:
+
+- **`Cargo.toml`** — `version` (crates.io publish requires it to equal the tag).
+- **`Cargo.lock`** — the `ripgrepx` entry; `cargo build` (or `cargo update -p ripgrepx`) refreshes it
+  after the `Cargo.toml` bump.
+- **`npm/package.json`** — `version` (CI also sets it from the tag at publish, but keep it in sync).
+
+`pyproject.toml` is `dynamic` — maturin reads the `Cargo.toml` version, so do **not** edit it.
+`install.sh`/README carry no concrete version. Then: commit as `release: X.Y.Z`, push `main`, and
+`git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 ## Conventions
 

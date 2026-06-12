@@ -67,11 +67,12 @@ possible — four, and only ever recognized as the **leading token**:
   page (an opaque, self-contained cursor — see [`cli.md`](cli.md)). An opt-in modifier, so the bare
   search stays `rg`-identical.
 - **`--server` (a gate)** — flips rgx out of ripgrep-passthrough into its own subcommand grammar
-  (`start`, `stop`, `status`, `watch`). Everything daemon-related lives behind it, so management never
-  shares rg's flag namespace and can never collide with a present or future rg flag.
+  (`start`, `stop`, `restart`, `status`, `watch`). Everything daemon-related lives behind it, so
+  management never shares rg's flag namespace and can never collide with a present or future rg flag.
 - **`--agent` (a gate)** — the AI-agent surface, with its own subcommand grammar (`mcp` to serve over
-  MCP, `skill` to print the agent skill, `install` to write it and print MCP setup). Same rationale as
-  `--server`: agent integration never shares rg's flag namespace.
+  MCP, `skill` to print the agent skill, `install`/`uninstall` to manage a per-agent bundle, `list` to
+  show status). `install` previews the exact changes and asks before touching anything. Same rationale
+  as `--server`: agent integration never shares rg's flag namespace.
 
 So:
 

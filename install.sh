@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/igorgatis/ripgrepx/main/install.sh | sh
 #
 # Env overrides:
-#   RGX_VERSION  release tag to install (default: latest, e.g. v0.2.0)
+#   RGX_VERSION  release tag to install (default: latest; e.g. RGX_VERSION=vX.Y.Z pins a release)
 #   RGX_TARGET   Rust target triple (default: autodetected from uname)
 #   RGX_USE_MUSL set to 1 on Linux to fetch the static musl build
 #   BIN_DIR      install directory (default: ~/.local/bin)
