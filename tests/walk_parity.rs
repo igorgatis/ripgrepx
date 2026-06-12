@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::Path;
 
-use rgx::index::{walk_files, walk_files_for};
+use rgx::index::walk_files_for;
 
 fn write(root: &Path, rel: &str, content: &str) {
     let p = root.join(rel);
@@ -27,17 +27,7 @@ fn write(root: &Path, rel: &str, content: &str) {
 
 /// Files rgx would index under `root`, as sorted `/`-separated paths relative to `root`.
 fn walked(root: &Path) -> Vec<String> {
-    let mut v: Vec<String> = walk_files(root)
-        .iter()
-        .map(|p| {
-            p.strip_prefix(root)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect();
-    v.sort();
-    v
+    walked_for(root, false, false)
 }
 
 /// A `.git` dir is enough to activate the gitignore stack (the crate only checks for its presence).

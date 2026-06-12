@@ -15,7 +15,10 @@ use crate::proto::{pack_opts, unpack_opts};
 use crate::sort::SortSpec;
 
 const KIND: u8 = 0x01;
-const VERSION: u8 = 0x02;
+// 0x03: the packed-options byte grew from 5 to 8 flag bits (invert/hidden/no_ignore). Bumping the
+// version makes a cross-version binary reject a cursor it would otherwise misread (decoding the new
+// flags as unset) rather than silently serving the wrong result set.
+const VERSION: u8 = 0x03;
 
 /// The compact output shape a cursor paginates over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

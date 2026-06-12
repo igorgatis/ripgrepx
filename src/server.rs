@@ -356,7 +356,11 @@ fn content_search(
     opts: SearchOptions,
     conn: &mut Stream,
 ) -> Result<()> {
-    if shared.ready.load(Ordering::SeqCst) {
+    // The index can only serve a query the index can narrow. A fallback query — no usable trigram, or
+    // `-v`/`--hidden`/`--no-ignore` (which need every file, resp. files the index never indexed) —
+    // must full-scan, exactly as the client decides before a normal request is ever sent. Honoring it
+    // here too keeps the daemon correct even for a request that reaches it unguarded.
+    if shared.ready.load(Ordering::SeqCst) && !crate::is_fallback(pattern, opts) {
         // Resolve candidates while holding the read lock, then RELEASE it before streaming: ripgrep
         // confirm + blocking socket writes must never run under the index lock, or a slow client
         // would block the watcher's write lock and freeze indexing.
@@ -367,8 +371,9 @@ fn content_search(
             proto::write_data(&mut *conn, chunk)
         })
     } else {
-        // Cold start only: pipelined full scan until the first build finishes. The sink is shared
-        // across walk threads, so guard the socket with a mutex.
+        // Cold start (index not yet built) or a fallback query the index can't serve: pipelined full
+        // scan with the request's walk/searcher config. The sink is shared across walk threads, so
+        // guard the socket with a mutex.
         let conn = std::sync::Mutex::new(conn);
         crate::stream_full_scan(&shared.root, pattern, opts, |chunk| {
             if let Ok(mut c) = conn.lock() {

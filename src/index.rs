@@ -403,7 +403,7 @@ pub fn walk_builder_for(root: &Path, hidden: bool, no_ignore: bool) -> WalkBuild
         b.add_custom_ignore_filename(".rgignore");
     }
     if hidden {
-        b.hidden(false);
+        b.hidden(false); // `--hidden`: hidden(false) tells the walker NOT to skip hidden entries.
     }
     b
 }

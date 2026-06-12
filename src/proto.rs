@@ -38,6 +38,8 @@ pub enum Request {
     CursorTake { token: String },
 }
 
+/// Pack the boolean flags into one byte. All 8 bits are now in use (bit 7 = `no_ignore`); a 9th flag
+/// needs a wider field here and in the cursor's opts byte, plus a cursor `VERSION` bump.
 pub(crate) fn pack_opts(o: &SearchOptions) -> u8 {
     (o.case_insensitive as u8)
         | ((o.multi_line as u8) << 1)
