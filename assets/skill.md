@@ -77,7 +77,33 @@ rgx --server status     # whether the index is ready, file/trigram counts, last 
 ```
 
 The background indexer starts on first use and keeps itself fresh as files change; you do not need
-to start or manage it manually.
+to start or manage it manually. It exits after an idle period (default 1 h) to free its RAM and
+respawns on the next search; a small repo that is cheap to rebuild is kept in RAM only (no on-disk
+snapshot), which `status` shows as `ram-only`. Both are tunable — see **Config**.
+
+## Config
+
+`rgx` reads an optional TOML config; edit it directly (there is no config CLI). Location, in order:
+`$RGX_CONFIG`, else `$XDG_CONFIG_HOME/rgx/config.toml`, else `~/.config/rgx/config.toml` (create it if
+missing). A malformed or invalid file is a hard error. Config is read once at startup, so to apply an
+edit, run `rgx --server stop`; the next search respawns the daemon with the new values.
+
+```toml
+# Base directory for the rebuildable cache (index + socket). Absolute path. $RGX_CACHE_DIR overrides.
+cache_dir = "/var/tmp/rgx-cache"
+
+# Persist the index to disk only if the cold build took at least this long (ms); below it the index
+# stays RAM-only and is rebuilt on each daemon start. 0 always persists. Default 1000.
+persist_threshold_ms = 1000
+
+# Exit the daemon after this many seconds with no search (the next search respawns it).
+# Zero or negative keeps it resident forever. Default 3600.
+idle_timeout_secs = 3600
+```
+
+To adjust a knob for the user: set the key in that file, then `rgx --server stop` so the change takes
+effect on the next search. Examples — keep the daemon resident forever: `idle_timeout_secs = -1`;
+always persist the snapshot: `persist_threshold_ms = 0`.
 
 ## Over MCP
 

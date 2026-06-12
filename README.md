@@ -122,7 +122,7 @@ cache_dir = "/var/tmp/rgx-cache"
 persist_threshold_ms = 1000
 
 # Exit the daemon after this many seconds with no search, freeing its RAM; the next search
-# respawns it. 0 stays resident forever. Default 3600.
+# respawns it. Zero or negative stays resident forever. Default 3600.
 idle_timeout_secs = 3600
 ```
 

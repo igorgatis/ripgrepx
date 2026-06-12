@@ -113,7 +113,7 @@ rgx -- --server        # everything after -- is positional
     this long; below it the index stays RAM-only and is rebuilt on each daemon start. `0` always
     persists. See [`index-and-storage.md`](index-and-storage.md#7-storage).
   - `idle_timeout_secs` (default `3600`) — exit the daemon after this long with no search, freeing
-    its RAM; the next search respawns it. `0` stays resident forever.
+    its RAM; the next search respawns it. Zero or negative stays resident forever.
 - The background indexer **starts on first use**, so you rarely need `--server start`/`stop`
   directly; they exist for explicit control (CI, scripted warm-up, teardown). It also exits on its
   own after `idle_timeout_secs` of no searches.

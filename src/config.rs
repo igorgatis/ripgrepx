@@ -17,8 +17,8 @@ use crate::paths::{non_empty, win_var};
 pub const DEFAULT_PERSIST_THRESHOLD_MS: u64 = 1000;
 
 /// The daemon exits after this long with no client request, freeing its RAM; the next search
-/// respawns it. `0` disables the timeout (stay resident forever).
-pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
+/// respawns it. Zero or negative disables the timeout (stay resident forever).
+pub const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 3600;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -28,8 +28,9 @@ pub struct Config {
     /// Persist the index to disk only if the cold build took at least this many milliseconds; below
     /// it the index stays RAM-only and is rebuilt on each daemon start. `0` always persists.
     pub persist_threshold_ms: Option<u64>,
-    /// Exit the daemon after this many seconds with no client request. `0` disables it.
-    pub idle_timeout_secs: Option<u64>,
+    /// Exit the daemon after this many seconds with no client request. Zero or negative keeps it
+    /// resident forever.
+    pub idle_timeout_secs: Option<i64>,
 }
 
 impl Config {
@@ -41,11 +42,11 @@ impl Config {
         )
     }
 
-    /// Idle period after which the daemon exits, or `None` when disabled (`0`).
+    /// Idle period after which the daemon exits, or `None` when disabled (zero or negative).
     pub fn idle_timeout(&self) -> Option<Duration> {
         match self.idle_timeout_secs.unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS) {
-            0 => None,
-            secs => Some(Duration::from_secs(secs)),
+            secs if secs <= 0 => None,
+            secs => Some(Duration::from_secs(secs as u64)),
         }
     }
 
@@ -157,12 +158,15 @@ mod tests {
         );
         assert_eq!(
             d.idle_timeout(),
-            Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS))
+            Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS as u64))
         );
 
-        let c = parse("persist_threshold_ms = 0\nidle_timeout_secs = 0").unwrap();
-        assert_eq!(c.persist_threshold(), Duration::from_millis(0));
-        assert_eq!(c.idle_timeout(), None);
+        // Zero and negative both keep the daemon resident forever.
+        assert_eq!(parse("idle_timeout_secs = 0").unwrap().idle_timeout(), None);
+        assert_eq!(
+            parse("idle_timeout_secs = -1").unwrap().idle_timeout(),
+            None
+        );
 
         let c = parse("persist_threshold_ms = 2500\nidle_timeout_secs = 60").unwrap();
         assert_eq!(c.persist_threshold(), Duration::from_millis(2500));
