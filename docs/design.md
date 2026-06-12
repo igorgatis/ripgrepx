@@ -28,7 +28,7 @@ The division of labor is the whole point:
   — never a missed or invented result.
 - When the index **can't accelerate** a query (a pattern the index can't reason about, or a
   not-yet-indexed area), `rgx` **falls back to a normal scan** transparently.
-- The output is byte-for-byte ripgrep's, so `alias rg=rgx` is a true drop-in.
+- The output is byte-for-byte ripgrep's: `rgx <pattern>` is a true drop-in for `rg <pattern>`.
 
 This guarantee — correctness from ripgrep, speed from the index — should survive every future design
 decision.
@@ -66,10 +66,12 @@ possible — four, and only ever recognized as the **leading token**:
   also accepts `--page-size N`, the `-l`/`-c` orientation modes, and `--cursor TOK` to fetch the next
   page (an opaque, self-contained cursor — see [`cli.md`](cli.md)). An opt-in modifier, so the bare
   search stays `rg`-identical.
-- **`--skill`** — a one-shot install of the agent skill.
-- **`--server` (the gate)** — flips rgx out of ripgrep-passthrough into its own subcommand grammar
-  (`start`, `stop`, `status`, `mcp`). Everything daemon-related lives behind it, so management never
+- **`--server` (a gate)** — flips rgx out of ripgrep-passthrough into its own subcommand grammar
+  (`start`, `stop`, `status`, `watch`). Everything daemon-related lives behind it, so management never
   shares rg's flag namespace and can never collide with a present or future rg flag.
+- **`--agent` (a gate)** — the AI-agent surface, with its own subcommand grammar (`mcp` to serve over
+  MCP, `skill` to print the agent skill, `install` to write it and print MCP setup). Same rationale as
+  `--server`: agent integration never shares rg's flag namespace.
 
 So:
 
@@ -86,8 +88,9 @@ in a project `.toml` the user edits directly — there is no config-editing CLI.
   options (globs, type filters, dirs-only), `rgx --find config --type d --glob '*.rs'` is simplest
   but lets file-search flags share rg's namespace. If that proves cramped, `--find` can follow the
   `--server` precedent and become a gate with its own subcommand grammar.
-- **Headline command list.** Whether `--skill` and the `--server` subcommands belong in the primary
-  help output or stay secondary.
+- **Headline command list.** Whether the `--server` and `--agent` subcommands belong in the primary
+  help output or stay behind their own `--help` (currently the top-level help lists them with a
+  pointer to `rgx --server --help` / `rgx --agent --help`).
 
 (Storage is settled — an in-RAM trigram index with a versioned on-disk snapshot; see
 [`index-and-storage.md`](index-and-storage.md). It's an implementation detail that doesn't affect the

@@ -1,7 +1,8 @@
 # CLI
 
 `rgx` is a near-drop-in for `rg`. The guiding rule: **a bare `rgx <pattern>` is always a plain
-ripgrep search**, so `alias rg=rgx` is safe and every habit and script keeps working — just faster.
+ripgrep search**, taking the same command line as `rg` — every habit and script keeps working, just
+faster.
 
 ## Search (the drop-in)
 
@@ -15,17 +16,16 @@ rgx <pattern> [rg flags...]
 - Patterns the index can't accelerate fall back to a normal scan transparently.
 
 ```sh
-alias rg=rgx
-rg TODO -t rust
-rg 'fn \w+_total' src/
-rg -i needle
+rgx TODO -t rust
+rgx 'fn \w+_total' src/
+rgx -i needle
 ```
 
 ## The flag surface
 
 rgx adds exactly **four** flags to ripgrep's, recognized only as the **leading token** (any other
-position goes straight to ripgrep). Three are search modes; `--server` gates everything else — see
-[`design.md`](design.md) for the rationale.
+position goes straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and
+`--agent` gate the daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale.
 
 ### Search modes
 
@@ -34,7 +34,6 @@ position goes straight to ripgrep). Three are search modes; `--server` gates eve
 | `rgx <pattern> [rg flags...]` | Content search via ripgrep, accelerated. |
 | `rgx --compact [opts] <pattern> [rg flags...]` | Same search, token-savings view: grouped by file, paged. |
 | `rgx --find <name\|path> [path] [--after PATH]` | Locate files/directories by name or path (find/fd-style). |
-| `rgx --skill` | Install the agent skill that teaches tools to use `rgx` (one-shot). |
 
 ### `--compact` — the token-savings view
 
@@ -69,12 +68,28 @@ preserves them across pages).
 | `rgx --server stop` | Stop the background indexer for this project. |
 | `rgx --server status` | One-shot snapshot: index state, file/trigram counts, memory, snapshot size and last-sync age. |
 | `rgx --server watch` | Live status: repaints on every change (cold-build progress count, then each reconcile) until interrupted. |
-| `rgx --server mcp` | Serve search to AI agents over MCP (stdio). |
+| `rgx --server --help` | The server subcommands in full (also `rgx --help --server`). |
 
 `--server` subcommands act on the **current directory's** project (run them from, or `cd` into, the
 repo). `watch` is the interactive companion to `status` — e.g. run `rgx --server watch` in another
 pane to see a cold index build climb `building N / M files` to `ready`, with no measurable cost to
 the indexing itself.
+
+### `--agent` — integrate with AI coding agents
+
+| Command | Purpose |
+| --- | --- |
+| `rgx --agent mcp` | Serve search to AI agents over MCP (stdio): `content_search`, `file_search`, `status`. |
+| `rgx --agent skill` | Print the agent skill markdown (teaches a model to prefer `rgx` over rg/grep/find/fd). |
+| `rgx --agent install` | Write the skill to `~/.claude/skills/rgx/SKILL.md` (or `$RGX_SKILL_DIR`) and print MCP setup. |
+| `rgx --agent --help` | The agent subcommands plus MCP setup for Claude Code, Codex, and other clients. |
+
+Works with **Claude Code**, **Codex**, and any MCP client. Register `rgx --agent mcp` as a stdio
+server: `claude mcp add rgx -- rgx --agent mcp` for Claude Code, a `[mcp_servers.rgx]` block in
+`~/.codex/config.toml` for Codex, or the equivalent `"rgx": { "command": "rgx", "args": ["--agent",
+"mcp"] }` entry in any other client's config. The skill is plain markdown: Claude Code loads it from
+`~/.claude/skills/`, while for Codex or others you paste it into `AGENTS.md` or the agent's
+instructions. See [`mcp.md`](mcp.md).
 
 ### Searching for a literal that looks like a flag
 

@@ -10,7 +10,7 @@ faster. It also has a token-frugal `--compact` paged view and an MCP server, bui
 npm install -g ripgrepx        # installs the `rgx` command
 rgx 'fn .*Handler' src/        # accelerated ripgrep search
 rgx --compact 'TODO'           # grouped + paged, token-savings view
-rgx --skill                    # install the agent skill
+rgx --agent install            # install the agent skill + print MCP setup (Claude Code, Codex, ...)
 ```
 
 On install, this package downloads the matching prebuilt binary (macOS, Linux, Windows; x64 + arm64)

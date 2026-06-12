@@ -1,6 +1,6 @@
 # MCP interface
 
-`rgx --server mcp` runs a stdio MCP server that exposes `rgx`'s search to AI agents as tools. Each tool
+`rgx --agent mcp` runs a stdio MCP server that exposes `rgx`'s search to AI agents as tools. Each tool
 proxies to the same shared index and background indexer the CLI uses, and returns **ripgrep-style
 text** — the `path:line:text` shape models already know — rather than bespoke structured JSON.
 
@@ -9,25 +9,33 @@ binary installed** — just `rgx`.
 
 ## Setup
 
-Register `rgx` as a stdio MCP server with your agent:
+Register `rgx --agent mcp` as a stdio MCP server with your agent:
 
 ```sh
-claude mcp add rgx -- rgx --server mcp          # Claude Code
+# Claude Code
+claude mcp add rgx -- rgx --agent mcp
 ```
 
-Or add it to any MCP client's config directly:
+```toml
+# Codex — ~/.codex/config.toml
+[mcp_servers.rgx]
+command = "rgx"
+args = ["--agent", "mcp"]
+```
 
 ```json
-{ "rgx": { "command": "rgx", "args": ["--server", "mcp"] } }
+// Any other MCP client — add to its config
+{ "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } }
 ```
 
 The MCP server keys off the working directory it's launched in, so run it from (or point it at) the
 project root you want searched. The index builds on first use and stays fresh on its own.
 
-Optionally install the **skill** so the agent is taught to prefer `rgx` over `rg`/`grep`/`find`/`fd`:
+Optionally add the **skill** so the agent is taught to prefer `rgx` over `rg`/`grep`/`find`/`fd`:
 
 ```sh
-rgx --skill        # writes ~/.claude/skills/rgx/SKILL.md (override dir via $RGX_SKILL_DIR)
+rgx --agent install   # writes ~/.claude/skills/rgx/SKILL.md (override dir via $RGX_SKILL_DIR) + prints MCP setup
+rgx --agent skill     # just print the skill markdown (paste into Codex AGENTS.md or any agent's instructions)
 ```
 
 The skill text is version-controlled in [`assets/skill.md`](../assets/skill.md).
@@ -64,9 +72,10 @@ either way, with zero new parsing for the agent.
 
 ## Skill
 
-`rgx --skill` installs a short agent skill that teaches a model to prefer these tools over raw
-`rg`/`find`/`fd`. The skill is version-controlled in [`assets/skill.md`](../assets/skill.md) and kept
-in sync with behavior (see `CLAUDE.md`).
+`rgx --agent install` writes a short agent skill (and prints the MCP setup) that teaches a model to
+prefer these tools over raw `rg`/`find`/`fd`; `rgx --agent skill` prints the same markdown so you can
+paste it into Codex `AGENTS.md` or any other agent's instructions. The skill is version-controlled in
+[`assets/skill.md`](../assets/skill.md) and kept in sync with behavior (see `CLAUDE.md`).
 
 ## Implementation status
 

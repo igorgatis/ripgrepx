@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ripgrepx.png" alt="ripgrepx" width="200">
+</p>
+
 # ripgrepx (`rgx`)
 
 **Instant ripgrep for codebases you search over and over.**
@@ -6,6 +10,10 @@
 files — but **ripgrep still does the matching**, so results are byte-for-byte `rg`'s, just faster. A
 stale index can only cost a little speed, never a missed or invented match. It searches content (full
 ripgrep regex) and locates files by name (find/fd-style), from the terminal or an AI agent over MCP.
+
+Warm, `rgx` answers most queries in well under 60 ms where `rg` takes 100 ms to 2.5 s — a **15–50×**
+speedup on the kind of symbol searches a developer actually runs, up to **128×** on the most
+selective. See the [benchmarks](#benchmarks) for the full numbers.
 
 ## For AI agents
 
@@ -36,16 +44,31 @@ curl -fsSL "https://github.com/igorgatis/ripgrepx/releases/download/$VER/rgx-$VE
 On **Windows**, `npm install -g ripgrepx`, or download `rgx-v0.1.0-x86_64-pc-windows-msvc.zip`
 (or `aarch64-…`) from the release and put `rgx.exe` on your `PATH`.
 
-**2. Teach your agent** to prefer rgx over rg/grep/find/fd (installs `~/.claude/skills/rgx/SKILL.md`):
+**2. Teach your agent** to prefer rgx over rg/grep/find/fd. `rgx --agent install` writes the skill to
+`~/.claude/skills/rgx/SKILL.md` and prints the MCP setup; `rgx --agent skill` just prints the skill
+markdown (for Codex `AGENTS.md` or any other agent's instructions):
 
 ```sh
-rgx --skill
+rgx --agent install
 ```
 
-**3. (optional) Register it as an MCP server:**
+**3. (optional) Register the MCP server** (`content_search`, `file_search`, `status`):
 
 ```sh
-claude mcp add rgx -- rgx --server mcp        # Claude Code
+# Claude Code
+claude mcp add rgx -- rgx --agent mcp
+```
+
+```toml
+# Codex — add to ~/.codex/config.toml
+[mcp_servers.rgx]
+command = "rgx"
+args = ["--agent", "mcp"]
+```
+
+```json
+// Any other MCP client — add to its config
+{ "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } }
 ```
 
 ### Token savings (`--compact`)
@@ -77,11 +100,11 @@ is flagged with a `note:` line.
 
 ### MCP or CLI
 
-- **MCP** — `rgx --server mcp` exposes `content_search` (returns the `--compact` paged view by
+- **MCP** — `rgx --agent mcp` exposes `content_search` (returns the `--compact` paged view by
   default; pass the response `cursor` to advance, or `files_only`/`count` to orient), `file_search`,
   and `status`. See [`docs/mcp.md`](docs/mcp.md).
-- **CLI** — a true drop-in for `rg`: `alias rg=rgx` and every command just gets faster. A bare
-  `rgx <pattern>` is plain (accelerated) ripgrep; `rgx --find <name>` locates files; `--server`
+- **CLI** — a near-drop-in for `rg`: `rgx <pattern>` takes the same command line and just runs
+  faster. A bare `rgx <pattern>` is plain (accelerated) ripgrep; `rgx --find <name>` locates files; `--server`
   manages the daemon. See [`docs/cli.md`](docs/cli.md).
 
 State (index + daemon socket) lives outside the repo under `$RGX_CACHE_DIR`, else

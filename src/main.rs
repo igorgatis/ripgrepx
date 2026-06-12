@@ -1,5 +1,6 @@
 //! rgx CLI. A bare `rgx <pattern>` is an (accelerated) ripgrep content search; the `--server` gate
-//! holds daemon management, and `--find` does fd/find-style name lookup. See `docs/cli.md`.
+//! holds daemon management, `--agent` the AI surface (MCP/skill), and `--find` does fd/find-style
+//! name lookup. See `docs/cli.md`.
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
 //! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -A/-B/-C, `--`).
@@ -31,34 +32,111 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         Some("--server") => server_cmd(&args[1..]),
+        Some("--agent") => agent_cmd(&args[1..]),
         Some("--compact") => compact_cmd(&args[1..]),
         Some("--find") => find_cmd(&args[1..]),
-        Some("--skill") => match rgx::skill::install() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("rgx --skill: {e}");
-                ExitCode::from(2)
-            }
-        },
         Some("-h" | "--help") => {
-            usage();
+            // `rgx --help --server` / `--help --agent`: defer to the sub-surface guide.
+            match args.get(1).map(String::as_str) {
+                Some("--server") => print!("{SERVER_HELP}"),
+                Some("--agent") => print!("{AGENT_HELP}"),
+                _ => print!("{HELP}"),
+            }
             ExitCode::SUCCESS
         }
         _ => content_cmd(&args),
     }
 }
 
+/// Brief usage, to stderr, for the error paths (no/invalid args). Points at `--help` for the rest.
 fn usage() {
     eprintln!(
         "usage:\n  rgx [flags] <pattern> [path]            content search (accelerated ripgrep)\n  \
-         rgx --compact [opts] <pattern> [path]   token-savings view: grouped + paged\n    \
-         opts: --page-size N, -l/--files-with-matches, -c/--count, --cursor TOK (next page)\n  \
+         rgx --compact [opts] <pattern> [path]   token-savings view: grouped + paged\n  \
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
-         rgx --server [start|stop|status|watch|mcp]\n\nflags: -i -s -w -F -U -A<n> -B<n> -C<n> --"
+         rgx --server [start|stop|status|watch]\n  \
+         rgx --agent [mcp|skill|install]\n\n\
+         flags: -i -s -w -F -U -A<n> -B<n> -C<n> --\n\
+         run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
 
+/// The full guide, to stdout, for `-h`/`--help`. Lean: an agent reads it once and knows the whole
+/// surface — drop-in ripgrep use, the index server, and the AI path (compaction, MCP, skill).
+/// `--server`/`--agent` have their own deeper guides (`rgx --server --help`, `rgx --agent --help`).
+const HELP: &str = "\
+rgx — Instant ripgrep for codebases you search over and over.
+
+  rgx [flags] <pattern> [path]           content search (accelerated ripgrep)
+  rgx --compact [opts] <pattern> [path]  token-savings view: grouped + paged
+  rgx --find <name|path> [path]          locate files/dirs by name (find/fd-style)
+  rgx --server [start|stop|status|watch]   background index server      (rgx --server --help)
+  rgx --agent [mcp|skill|install]          AI-agent integration         (rgx --agent --help)
+
+DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
+(anywhere, like rg): -i -s -w -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
+first token. Examples:
+    rgx 'fn \\w+_total' src/        rgx -i needle        rgx -- --server   (literal flag)
+
+SERVER — the indexer starts on first use and stays fresh on its own; subcommands act on the cwd's
+project. `status` reports readiness/counts/age, `watch` repaints live. Index + socket live under
+$RGX_CACHE_DIR (else ~/.cache/rgx): a rebuildable cache, safe to delete.
+
+FOR AI AGENTS — works with Claude Code, Codex, and any MCP client; see `rgx --agent --help`.
+  Compaction — `--compact` groups matches by file, pages behind an opaque cursor, trims long lines.
+  Nothing is dropped; the header reports the full total. `--page-size N` (default 50), `--cursor TOK`
+  next page, `-l` files only, `-c` per-file counts. The cursor carries the whole query, so paging
+  can't drift; a result set that changed gets a `note:`.
+  MCP — `rgx --agent mcp` (stdio) exposes content_search (compact paged view), file_search, status.
+  Skill — `rgx --agent skill` prints it; `rgx --agent install` installs it + prints MCP setup.
+
+Docs: https://github.com/igorgatis/ripgrepx
+";
+
+/// `rgx --server --help` (or `--help --server`): the index-server subcommands in full.
+const SERVER_HELP: &str = "\
+rgx --server — the background index server. Subcommands act on the current directory's project; the
+indexer also starts on first search, so you rarely manage it by hand.
+
+  rgx --server          run the indexer in the foreground
+  rgx --server start    start the background indexer for this project
+  rgx --server stop     stop it
+  rgx --server status   one-shot: readiness, file/trigram counts, memory, last-sync age
+  rgx --server watch    live status, repaints on every change until interrupted
+
+Index + socket live under $RGX_CACHE_DIR (else $XDG_CACHE_HOME/rgx, else ~/.cache/rgx): a rebuildable
+cache, safe to delete, never written into the indexed tree.
+";
+
+/// `rgx --agent --help` (or `--help --agent`): the AI-agent surface, with setup for the common hosts.
+const AGENT_HELP: &str = "\
+rgx --agent — integrate rgx with AI coding agents (Claude Code, Codex, or any MCP client).
+
+  rgx --agent mcp       run the stdio MCP server: content_search, file_search, status
+  rgx --agent skill     print the agent skill (teaches a model to prefer rgx over rg/grep/find/fd)
+  rgx --agent install   install the skill into ~/.claude/skills (or $RGX_SKILL_DIR) + print MCP setup
+
+MCP setup — register `rgx --agent mcp` as a stdio server:
+  Claude Code   claude mcp add rgx -- rgx --agent mcp
+  Codex         add to ~/.codex/config.toml:
+                  [mcp_servers.rgx]
+                  command = \"rgx\"
+                  args = [\"--agent\", \"mcp\"]
+  Other clients add to the client's MCP config:
+                  \"rgx\": { \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] }
+
+Skill — `rgx --agent skill` is plain markdown. Claude Code loads it from ~/.claude/skills/rgx/SKILL.md
+(what `install` writes); for Codex or others, paste it into AGENTS.md or your agent's instructions.
+";
+
 fn server_cmd(rest: &[String]) -> ExitCode {
+    if matches!(
+        rest.first().map(String::as_str),
+        Some("-h" | "--help" | "help")
+    ) {
+        print!("{SERVER_HELP}");
+        return ExitCode::SUCCESS;
+    }
     let root = resolve_root(None);
     match rest.first().map(String::as_str) {
         None => match server::run(root) {
@@ -135,15 +213,48 @@ fn server_cmd(rest: &[String]) -> ExitCode {
                 }
             }
         }
-        Some("mcp") => match mcp::run(root) {
+        Some(other) => {
+            eprintln!("rgx --server: unknown subcommand {other:?}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `rgx --agent <mcp|skill|install>`: the AI-agent surface. `mcp` runs the stdio MCP server; `skill`
+/// prints the agent skill; `install` writes it under the skills dir and prints MCP setup. `--help`
+/// prints the agent guide; a missing subcommand is an error.
+fn agent_cmd(rest: &[String]) -> ExitCode {
+    match rest.first().map(String::as_str) {
+        Some("mcp") => match mcp::run(resolve_root(None)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("rgx --server mcp: {e}");
+                eprintln!("rgx --agent mcp: {e}");
                 ExitCode::from(2)
             }
         },
+        Some("skill") => {
+            rgx::skill::print_skill();
+            ExitCode::SUCCESS
+        }
+        Some("install") => match rgx::skill::install() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("rgx --agent install: {e}");
+                ExitCode::from(2)
+            }
+        },
+        Some("-h" | "--help" | "help") => {
+            print!("{AGENT_HELP}");
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!(
+                "rgx --agent: pick a subcommand (mcp|skill|install); see `rgx --agent --help`"
+            );
+            ExitCode::from(2)
+        }
         Some(other) => {
-            eprintln!("rgx --server: unknown subcommand {other:?}");
+            eprintln!("rgx --agent: unknown subcommand {other:?}");
             ExitCode::from(2)
         }
     }

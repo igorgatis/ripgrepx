@@ -31,7 +31,7 @@ rgx -C 3 pattern            # 3 lines of context (also -A <n> / -B <n>)
 - To search for text that looks like a flag, use ripgrep's escapes: `rgx -e --foo` or
   `rgx -- --foo` (everything after `--` is the pattern/path).
 
-**Flag ordering (important):** rgx's own modes — `--compact`, `--find`, `--server`, `--skill` — are
+**Flag ordering (important):** rgx's own modes — `--compact`, `--find`, `--server`, `--agent` — are
 recognized **only as the first token**. Put them right after `rgx`: `rgx --compact 'fn ' src/` works,
 but `rgx 'fn ' --compact` is treated as a plain search and errors. All the search flags above can
 follow in any position, like `rg`.
@@ -80,7 +80,7 @@ to start or manage it manually.
 
 ## Over MCP
 
-If `rgx` is wired as an MCP server (`rgx --server mcp`), the same search is exposed as three tools:
+If `rgx` is wired as an MCP server (`rgx --agent mcp`), the same search is exposed as three tools:
 
 - **`content_search`** — args: `pattern` (required for a new search; omit it when paging via
   `cursor`), plus optional `case_insensitive`, `word`, `fixed_strings`, `multi_line`, `page_size`,

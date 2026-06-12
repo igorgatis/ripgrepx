@@ -34,7 +34,7 @@ Tooling is managed by [mise](https://mise.jdx.dev). Run via `mise run <task>`:
 - **Keep docs in sync.** Treat `docs/`, `README.md`, and this file as part of the change: before
   committing anything that alters behavior, the command surface, or the design, update the relevant
   doc in the same commit. Docs must never describe a state the code isn't in.
-- **Keep the agent skill in sync.** The skill installed by `rgx --skill` is the version-controlled
+- **Keep the agent skill in sync.** The skill installed by `rgx --agent install` is the version-controlled
   [`assets/skill.md`](assets/skill.md) (embedded at build time). It is agent-facing documentation of
   the command surface and behavior, so the same rule as docs applies: any change to flags, the
   command surface, output shape, or freshness/MCP behavior must update `assets/skill.md` in the same
