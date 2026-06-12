@@ -34,6 +34,7 @@ position goes straight to ripgrep). Two are search modes (`--compact`, `--find`)
 | `rgx <pattern> [rg flags...]` | Content search via ripgrep, accelerated. |
 | `rgx --compact [opts] <pattern> [rg flags...]` | Same search, token-savings view: grouped by file, paged. |
 | `rgx --find <name\|path> [path] [--after PATH]` | Locate files/directories by name or path (find/fd-style). |
+| `rgx --version` (`-V`) | Print the rgx version. |
 
 ### `--compact` — the token-savings view
 

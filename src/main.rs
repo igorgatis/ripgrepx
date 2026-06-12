@@ -44,6 +44,10 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some("-V" | "--version") => {
+            println!("rgx {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         _ => content_cmd(&args),
     }
 }
@@ -72,6 +76,7 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --find <name|path> [path]          locate files/dirs by name (find/fd-style)
   rgx --server [start|stop|status|watch]   background index server      (rgx --server --help)
   rgx --agent [mcp|skill|install]          AI-agent integration         (rgx --agent --help)
+  rgx --version                            print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
 (anywhere, like rg): -i -s -w -n -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
