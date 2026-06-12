@@ -5,9 +5,12 @@
 //! control), but the *presentation* differs: the path is printed once per file, results are paged,
 //! and pathologically long lines are center-truncated on the match (one `Read` from full content).
 
+use std::collections::HashMap;
+
 use grep::matcher::Matcher;
 
 use crate::confirm::{SearchOptions, build_matcher};
+use crate::cursor::{self, Cursor, Mode};
 use crate::effective_pattern;
 
 /// Default matches per page. Generous: an agent pulls the next page cheaply (warm index).
@@ -17,8 +20,10 @@ pub const DEFAULT_PAGE_SIZE: usize = 50;
 pub const DEFAULT_MAX_COLS: usize = 200;
 
 pub struct CompactOpts {
-    /// 1-based page number.
-    pub page: usize,
+    pub mode: Mode,
+    /// Keyset resume position: render only entries strictly after this `(path, lineno)` key (lineno is
+    /// ignored in files/count modes). `None` starts from the beginning.
+    pub start_after: Option<(String, u64)>,
     pub page_size: usize,
     pub max_cols: usize,
 }
@@ -26,30 +31,72 @@ pub struct CompactOpts {
 impl Default for CompactOpts {
     fn default() -> Self {
         Self {
-            page: 1,
+            mode: Mode::Matches,
+            start_after: None,
             page_size: DEFAULT_PAGE_SIZE,
             max_cols: DEFAULT_MAX_COLS,
         }
     }
 }
 
-/// A rendered page: surface-agnostic `header` + `body`, plus counts so each caller (CLI / MCP) can
-/// compose its own "next page" hint.
+/// A rendered page: surface-agnostic `header` + `body`, plus the counts and keyset state each caller
+/// (CLI / MCP) needs to mint the "next page" cursor and detect a changed result set.
 pub struct Page {
     pub header: String,
     pub body: String,
     pub total_matches: usize,
     pub total_files: usize,
-    /// 1-based page actually rendered (clamped into range).
-    pub page: usize,
-    pub pages: usize,
+    /// 1-based index of the first/last entry on this page (in matches, or files for `-l`/`-c`); 0 when
+    /// empty.
+    pub first_index: usize,
+    pub last_index: usize,
+    /// Keyset key of the last rendered entry, to seed the next cursor; `None` when nothing remains.
+    pub last_key: Option<(String, u64)>,
+    pub has_more: bool,
+    /// Fingerprint of the full result set, for staleness detection across pages.
+    pub fingerprint: u64,
 }
 
 impl Page {
-    /// Whether a further page exists after the one rendered.
-    pub fn has_more(&self) -> bool {
-        self.page < self.pages
+    /// The cursor that fetches the page after this one, or `None` when this is the last page. Both the
+    /// CLI and MCP surfaces mint it the same way; `root_hint` is the only per-surface input (the
+    /// resolved root for the CLI, `None` for MCP where the server root is authoritative).
+    pub fn next_cursor(
+        &self,
+        mode: Mode,
+        pattern: String,
+        opts: SearchOptions,
+        page_size: usize,
+        root_hint: Option<String>,
+    ) -> Option<Cursor> {
+        self.has_more.then(|| Cursor {
+            mode,
+            pattern,
+            opts,
+            page_size,
+            last_path: self.last_key.as_ref().map(|(p, _)| p.clone()),
+            last_lineno: self.last_key.as_ref().map_or(0, |(_, l)| *l),
+            prev_total: self.total_matches,
+            fingerprint: self.fingerprint,
+            root_hint,
+        })
     }
+
+    /// A note for the caller to surface when resuming a cursor whose result set has since changed
+    /// (fingerprint mismatch), or `None`. `prev` is the cursor's `(prev_total, fingerprint)`.
+    pub fn staleness_note(&self, prev: Option<(usize, u64)>) -> Option<String> {
+        match prev {
+            Some((prev_total, prev_fp)) if prev_fp != self.fingerprint => Some(format!(
+                "result set changed since the previous page ({prev_total} -> {} matches)",
+                self.total_matches
+            )),
+            _ => None,
+        }
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 struct Row<'a> {
@@ -61,18 +108,27 @@ struct Row<'a> {
     block: usize,
 }
 
-/// Reshape `raw` (ripgrep's `path:line:text` output) into a compact paginated page. `pattern`/`opts`
-/// are used only to locate the match within long lines for centered truncation.
+/// Reshape `raw` (ripgrep's `path:line:text` output) into a compact page. `pattern`/`opts` are used
+/// only to locate the match within long lines for centered truncation. Pagination is keyset
+/// (resume after `start_after`), not offset, so it stays correct when the result set shifts between
+/// calls; `mode` selects the matches / files (`-l`) / count (`-c`) shape.
 pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) -> Page {
     let text = String::from_utf8_lossy(raw);
     let rows = parse_rows(&text);
 
-    let match_idx: Vec<usize> = rows
+    // Keyset paging compares match keys as (path-string, lineno), so match_idx MUST be in that exact
+    // order. We cannot trust the input order: collect_search's daemon path emits in index file-id
+    // order (fresh-build = `Path::cmp`, which differs from byte-string order at the `/` boundary; and
+    // incrementally-added files are appended with the highest id), and the cold-scan path is
+    // nondeterministic. Sorting here makes the window, skip count, and last_key self-consistent and
+    // the output deterministic regardless of how the bytes arrived.
+    let mut match_idx: Vec<usize> = rows
         .iter()
         .enumerate()
         .filter(|(_, r)| r.is_match)
         .map(|(i, _)| i)
         .collect();
+    match_idx.sort_by(|&a, &b| (rows[a].path, rows[a].lineno).cmp(&(rows[b].path, rows[b].lineno)));
     let total_matches = match_idx.len();
 
     let mut files: Vec<&str> = rows.iter().filter(|r| r.is_match).map(|r| r.path).collect();
@@ -80,57 +136,98 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
     files.dedup();
     let total_files = files.len();
 
+    let fingerprint =
+        cursor::fingerprint(match_idx.iter().map(|&i| (rows[i].path, rows[i].lineno)));
     let page_size = c.page_size.max(1);
-    let pages = total_matches.div_ceil(page_size); // 0 when there are no matches
-    let page = c.page.max(1).min(pages.max(1));
 
-    let header = format!(
-        "[page {page}/{} \u{b7} {total_matches} match{} in {total_files} file{}]",
-        pages.max(1),
-        if total_matches == 1 { "" } else { "es" },
-        if total_files == 1 { "" } else { "s" },
-    );
-
-    if total_matches == 0 {
-        return Page {
-            header,
-            body: String::new(),
+    match c.mode {
+        Mode::Matches => render_matches(
+            &rows,
+            &match_idx,
             total_matches,
             total_files,
-            page: 1,
-            pages: 0,
-        };
+            pattern,
+            opts,
+            &c,
+            page_size,
+            fingerprint,
+        ),
+        Mode::Files | Mode::Count => render_by_file(
+            &rows,
+            &match_idx,
+            &files,
+            total_matches,
+            total_files,
+            &c,
+            page_size,
+            fingerprint,
+        ),
     }
+}
 
-    let start = (page - 1) * page_size;
-    let window: std::collections::HashSet<usize> = match_idx
+#[allow(clippy::too_many_arguments)]
+fn render_matches(
+    rows: &[Row],
+    match_idx: &[usize],
+    total_matches: usize,
+    total_files: usize,
+    pattern: &str,
+    opts: SearchOptions,
+    c: &CompactOpts,
+    page_size: usize,
+    fingerprint: u64,
+) -> Page {
+    // Keyset: count matches at or before the resume key, then take the next window.
+    let skip = match &c.start_after {
+        Some((p, l)) => match_idx
+            .iter()
+            .filter(|&&i| (rows[i].path, rows[i].lineno) <= (p.as_str(), *l))
+            .count(),
+        None => 0,
+    };
+    let window_matches: Vec<usize> = match_idx
         .iter()
         .copied()
-        .skip(start)
+        .skip(skip)
         .take(page_size)
         .collect();
+    let rendered = window_matches.len();
+    let window: std::collections::HashSet<usize> = window_matches.iter().copied().collect();
+    let first_index = if rendered == 0 { 0 } else { skip + 1 };
+    let last_index = if rendered == 0 { 0 } else { skip + rendered };
+    let has_more = skip + rendered < total_matches;
+    let last_key = window_matches
+        .last()
+        .map(|&i| (rows[i].path.to_string(), rows[i].lineno));
 
-    // A context row renders iff the nearest match (within its block) is in the window.
-    let nearest = nearest_match_per_row(&rows);
-    let render: Vec<bool> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            if r.is_match {
+    let header = if total_matches == 0 {
+        "[no matches]".to_string()
+    } else {
+        format!(
+            "[matches {first_index}-{last_index} of {total_matches} in {total_files} file{}]",
+            plural(total_files)
+        )
+    };
+
+    // A context row renders iff the nearest match (within its block) is in the window. Collect the
+    // rows to show, then emit them in canonical (path, lineno) order — the same order the keyset
+    // windows in — so the body is sorted and stable regardless of the input's arrival order.
+    let nearest = nearest_match_per_row(rows);
+    let mut to_render: Vec<usize> = (0..rows.len())
+        .filter(|&i| {
+            if rows[i].is_match {
                 window.contains(&i)
             } else {
                 nearest[i].is_some_and(|m| window.contains(&m))
             }
         })
         .collect();
-
+    to_render.sort_by(|&a, &b| (rows[a].path, rows[a].lineno).cmp(&(rows[b].path, rows[b].lineno)));
     let matcher = build_matcher(&effective_pattern(pattern, opts), opts).ok();
     let mut body = String::new();
     let mut cur_path: Option<&str> = None;
-    for (i, r) in rows.iter().enumerate() {
-        if !render[i] {
-            continue;
-        }
+    for &i in &to_render {
+        let r = &rows[i];
         if cur_path != Some(r.path) {
             body.push_str(r.path);
             body.push('\n');
@@ -158,8 +255,76 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
         body,
         total_matches,
         total_files,
-        page,
-        pages,
+        first_index,
+        last_index,
+        has_more,
+        last_key,
+        fingerprint,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_by_file(
+    rows: &[Row],
+    match_idx: &[usize],
+    files: &[&str],
+    total_matches: usize,
+    total_files: usize,
+    c: &CompactOpts,
+    page_size: usize,
+    fingerprint: u64,
+) -> Page {
+    let skip = match &c.start_after {
+        Some((p, _)) => files.iter().filter(|&&f| f <= p.as_str()).count(),
+        None => 0,
+    };
+    let window: Vec<&str> = files.iter().copied().skip(skip).take(page_size).collect();
+    let rendered = window.len();
+    let first_index = if rendered == 0 { 0 } else { skip + 1 };
+    let last_index = if rendered == 0 { 0 } else { skip + rendered };
+    let has_more = skip + rendered < total_files;
+    let last_key = window.last().map(|&p| (p.to_string(), 0));
+
+    let counts: HashMap<&str, usize> = if matches!(c.mode, Mode::Count) {
+        let mut m = HashMap::new();
+        for &i in match_idx {
+            *m.entry(rows[i].path).or_insert(0) += 1;
+        }
+        m
+    } else {
+        HashMap::new()
+    };
+
+    let body: String = match c.mode {
+        Mode::Count => window
+            .iter()
+            .map(|&p| format!("{p}:{}\n", counts.get(p).copied().unwrap_or(0)))
+            .collect(),
+        _ => window.iter().map(|&p| format!("{p}\n")).collect(),
+    };
+
+    let header = if total_files == 0 {
+        "[no matches]".to_string()
+    } else if matches!(c.mode, Mode::Count) {
+        format!(
+            "[count {first_index}-{last_index} of {total_files} file{} \u{b7} {total_matches} match{}]",
+            plural(total_files),
+            if total_matches == 1 { "" } else { "es" }
+        )
+    } else {
+        format!("[files {first_index}-{last_index} of {total_files}]")
+    };
+
+    Page {
+        header,
+        body,
+        total_matches,
+        total_files,
+        first_index,
+        last_index,
+        has_more,
+        last_key,
+        fingerprint,
     }
 }
 
@@ -348,12 +513,16 @@ mod tests {
 src/a.rs:2:fn two() {}\n\
 src/b.rs:10:fn three() {}\n";
 
+    fn page(raw: &[u8], pattern: &str, c: CompactOpts) -> Page {
+        format(raw, pattern, SearchOptions::default(), c)
+    }
+
     #[test]
     fn groups_by_file_with_counts() {
-        let p = format(RAW, "fn", SearchOptions::default(), CompactOpts::default());
+        let p = page(RAW, "fn", CompactOpts::default());
         assert_eq!(p.total_matches, 3);
         assert_eq!(p.total_files, 2);
-        assert_eq!(p.pages, 1);
+        assert!(!p.has_more);
         // Path printed once per file, lines indented under it.
         assert_eq!(p.body.matches("src/a.rs\n").count(), 1);
         assert!(
@@ -361,43 +530,158 @@ src/b.rs:10:fn three() {}\n";
                 .contains("src/a.rs\n  1: fn one() {}\n  2: fn two() {}\n")
         );
         assert!(p.body.contains("src/b.rs\n  10: fn three() {}\n"));
-        assert!(p.header.contains("3 matches in 2 files"));
+        assert!(p.header.contains("matches 1-3 of 3 in 2 files"));
     }
 
     #[test]
     fn paginates_without_dropping_matches() {
-        let opts = CompactOpts {
-            page: 1,
-            page_size: 2,
-            max_cols: DEFAULT_MAX_COLS,
-        };
-        let p1 = format(RAW, "fn", SearchOptions::default(), opts);
-        assert_eq!(p1.pages, 2);
-        assert!(p1.has_more());
+        let p1 = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                page_size: 2,
+                ..Default::default()
+            },
+        );
+        assert!(p1.has_more);
+        assert_eq!((p1.first_index, p1.last_index), (1, 2));
         assert!(p1.body.contains("  1: fn one"));
         assert!(p1.body.contains("  2: fn two"));
         assert!(!p1.body.contains("three"));
 
-        let opts2 = CompactOpts {
-            page: 2,
-            page_size: 2,
-            max_cols: DEFAULT_MAX_COLS,
-        };
-        let p2 = format(RAW, "fn", SearchOptions::default(), opts2);
-        assert!(!p2.has_more());
+        let p2 = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                page_size: 2,
+                start_after: p1.last_key.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(!p2.has_more);
+        assert_eq!((p2.first_index, p2.last_index), (3, 3));
         assert!(p2.body.contains("src/b.rs\n  10: fn three"));
         assert!(!p2.body.contains("fn one"));
     }
 
     #[test]
+    fn keyset_survives_unsorted_input_without_dropping_matches() {
+        // The daemon emits matches in index file-id order (Path::cmp / append order), which is NOT
+        // byte-string order: `src/a/b.rs` sorts before `src/a.rs` as a Path but after it as a string.
+        // Feed that daemon-style order and walk every page; all three matches must be reachable.
+        const UNSORTED: &[u8] = b"src/a/b.rs:1:fn x\n\
+src/a.rs:1:fn y\n\
+src/ab.rs:1:fn z\n";
+        let mut seen = Vec::new();
+        let mut start_after = None;
+        for _ in 0..5 {
+            let p = page(
+                UNSORTED,
+                "fn",
+                CompactOpts {
+                    page_size: 1,
+                    start_after: start_after.clone(),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(p.total_matches, 3);
+            for line in p.body.lines().filter(|l| l.starts_with("  ")) {
+                seen.push(line.to_string());
+            }
+            if !p.has_more {
+                break;
+            }
+            start_after = p.last_key.clone();
+        }
+        // Every match rendered exactly once, in canonical path order, none dropped or duplicated.
+        assert_eq!(seen, vec!["  1: fn y", "  1: fn x", "  1: fn z"]);
+    }
+
+    #[test]
+    fn keyset_resume_after_last_key() {
+        // Resume mid-file: page_size 1 over two matches in src/a.rs.
+        let p1 = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                page_size: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(p1.last_key, Some(("src/a.rs".to_string(), 1)));
+        let p2 = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                page_size: 1,
+                start_after: p1.last_key.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(p2.body.contains("  2: fn two"));
+        assert!(!p2.body.contains("fn one"));
+        assert_eq!((p2.first_index, p2.last_index), (2, 2));
+    }
+
+    #[test]
+    fn files_mode_lists_paths() {
+        let p = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                mode: Mode::Files,
+                ..Default::default()
+            },
+        );
+        assert_eq!(p.total_files, 2);
+        assert!(p.header.contains("files 1-2 of 2"));
+        assert!(p.body.contains("src/a.rs\n"));
+        assert!(p.body.contains("src/b.rs\n"));
+        assert!(!p.body.contains("fn one")); // no match text in files mode
+    }
+
+    #[test]
+    fn count_mode_tallies_per_file() {
+        let p = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                mode: Mode::Count,
+                ..Default::default()
+            },
+        );
+        assert!(p.body.contains("src/a.rs:2\n"));
+        assert!(p.body.contains("src/b.rs:1\n"));
+        assert!(p.header.contains("count 1-2 of 2 files"));
+        assert!(p.header.contains("3 matches"));
+    }
+
+    #[test]
+    fn fingerprint_stable_across_calls_and_pages() {
+        let full = page(RAW, "fn", CompactOpts::default());
+        let paged = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                page_size: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(full.fingerprint, paged.fingerprint);
+        assert_ne!(full.fingerprint, 0);
+    }
+
+    #[test]
     fn truncates_long_line_centered_on_match() {
         let long = format!("src/x.rs:1:{}NEEDLE{}\n", "a".repeat(400), "b".repeat(400));
-        let opts = CompactOpts {
-            page: 1,
-            page_size: DEFAULT_PAGE_SIZE,
-            max_cols: 60,
-        };
-        let p = format(long.as_bytes(), "NEEDLE", SearchOptions::default(), opts);
+        let p = page(
+            long.as_bytes(),
+            "NEEDLE",
+            CompactOpts {
+                max_cols: 60,
+                ..Default::default()
+            },
+        );
         let line = p.body.lines().find(|l| l.contains("NEEDLE")).unwrap();
         assert!(line.contains('\u{2026}'), "expected ellipsis: {line}");
         assert!(line.chars().count() < 100);
@@ -410,12 +694,14 @@ src/b.rs:10:fn three() {}\n";
             "é".repeat(300),
             "ü".repeat(300)
         );
-        let opts = CompactOpts {
-            page: 1,
-            page_size: DEFAULT_PAGE_SIZE,
-            max_cols: 50,
-        };
-        let p = format(long.as_bytes(), "NEEDLE", SearchOptions::default(), opts);
+        let p = page(
+            long.as_bytes(),
+            "NEEDLE",
+            CompactOpts {
+                max_cols: 50,
+                ..Default::default()
+            },
+        );
         let line = p.body.lines().find(|l| l.contains("NEEDLE")).unwrap();
         assert!(line.contains('\u{2026}'));
         assert!(line.chars().count() < 90);
@@ -423,10 +709,11 @@ src/b.rs:10:fn three() {}\n";
 
     #[test]
     fn empty_input_has_no_body() {
-        let p = format(b"", "fn", SearchOptions::default(), CompactOpts::default());
+        let p = page(b"", "fn", CompactOpts::default());
         assert_eq!(p.total_matches, 0);
-        assert_eq!(p.pages, 0);
+        assert!(!p.has_more);
         assert!(p.body.is_empty());
+        assert_eq!(p.header, "[no matches]");
     }
 
     #[test]
@@ -439,16 +726,18 @@ f.rs-6-after a\n\
 f.rs-9-before b\n\
 f.rs:10:MATCH b\n\
 f.rs-11-after b\n";
-        let opts = CompactOpts {
-            page: 1,
-            page_size: 1,
-            max_cols: DEFAULT_MAX_COLS,
-        };
-        let p = format(raw, "MATCH", SearchOptions::default(), opts);
+        let p = page(
+            raw,
+            "MATCH",
+            CompactOpts {
+                page_size: 1,
+                ..Default::default()
+            },
+        );
         // Two matches in one file; context lines never inflate the count.
         assert_eq!(p.total_matches, 2);
         assert_eq!(p.total_files, 1);
-        assert_eq!(p.pages, 2);
+        assert!(p.has_more);
         // Page 1 carries match a with its surrounding context, and nothing from match b's block.
         assert!(p.body.contains("  5: MATCH a"));
         assert!(p.body.contains("  4- before a"));
@@ -464,12 +753,7 @@ f.rs-11-after b\n";
         let raw = b"f.txt-2-log at 12:34:56 here\n\
 f.txt:3:TARGET match\n\
 f.txt-4-after line\n";
-        let opts = CompactOpts {
-            page: 1,
-            page_size: DEFAULT_PAGE_SIZE,
-            max_cols: DEFAULT_MAX_COLS,
-        };
-        let p = format(raw, "TARGET", SearchOptions::default(), opts);
+        let p = page(raw, "TARGET", CompactOpts::default());
         assert_eq!(p.total_matches, 1, "{}", p.body);
         assert_eq!(p.total_files, 1, "{}", p.body);
         assert!(p.body.contains("f.txt\n  2- log at 12:34:56 here"));
@@ -480,10 +764,9 @@ f.txt-4-after line\n";
     #[test]
     fn colon_separator_wins_over_hyphen_in_path() {
         // A real `:N:` must split even when the path/text contains hyphens (and digits around them).
-        let p = format(
+        let p = page(
             b"src/a-b-2.rs:42:let x-1 = y-2;\n",
             "let",
-            SearchOptions::default(),
             CompactOpts::default(),
         );
         assert!(
@@ -495,16 +778,19 @@ f.txt-4-after line\n";
     }
 
     #[test]
-    fn page_past_end_clamps_to_last_page() {
-        let opts = CompactOpts {
-            page: 99,
-            page_size: 2,
-            max_cols: DEFAULT_MAX_COLS,
-        };
-        let p = format(RAW, "fn", SearchOptions::default(), opts);
-        assert_eq!(p.page, 2);
-        assert_eq!(p.pages, 2);
-        assert!(!p.has_more());
-        assert!(p.body.contains("fn three"));
+    fn start_after_past_end_is_empty() {
+        let p = page(
+            RAW,
+            "fn",
+            CompactOpts {
+                start_after: Some(("zzz".to_string(), 0)),
+                ..Default::default()
+            },
+        );
+        assert!(!p.has_more);
+        assert_eq!(p.first_index, 0);
+        assert_eq!(p.last_index, 0);
+        assert!(p.body.is_empty());
+        assert_eq!(p.last_key, None);
     }
 }

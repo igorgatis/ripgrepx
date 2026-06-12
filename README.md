@@ -48,32 +48,38 @@ rgx --skill
 claude mcp add rgx -- rgx --server mcp        # Claude Code
 ```
 
-### Token savings (`--compact` + `--page`)
+### Token savings (`--compact`)
 
 Like [rtk](https://github.com/rtk-ai/rtk), `rgx` can compact search output to save agent tokens:
-`--compact` groups matches by file (the path is printed once), pages the result, and trims very long
-lines around the match. Unlike a lossy filter, **nothing is dropped** — the match set is exactly
-`rg`'s, and because the index is warm, fetching the next page is cheap, so every match stays
-reachable.
+`--compact` groups matches by file (the path is printed once), pages the result behind an opaque
+cursor, and trims very long lines around the match. Unlike a lossy filter, **nothing is dropped** —
+the match set is exactly `rg`'s, the header reports the full total so you know what you have not seen,
+and because the index is warm, fetching the next page is cheap, so every match stays reachable.
 
 ```sh
-rgx --compact 'fn .*Handler'             # grouped + paged; footer prints the next-page command
-rgx --compact --page 2 'fn .*Handler'    # next page (also -p 2)
+rgx --compact 'fn .*Handler'                 # grouped + paged; footer prints the next-page command
+rgx --compact --cursor '<token>'             # next page (token copied from the footer)
+rgx --compact -l 'fn .*Handler'              # matching files only;  -c for per-file counts
 ```
 
 ```
-[page 1/3 · 142 matches in 18 files]
+[matches 1-50 of 142 in 18 files]
 src/server.rs
   210: fn content_search(...) -> Result<()> {
 src/main.rs
   168: fn content_cmd(args: &[String]) -> ExitCode {
-next: rgx --compact --page 2 'fn .*Handler'
+next: rgx --compact --cursor 'AQEAAAAAAA...'
 ```
+
+The cursor carries the entire query (pattern + every flag) plus a keyset resume position, so the next
+page is always the same search — never a different one — and a result set that changed between pages
+is flagged with a `note:` line.
 
 ### MCP or CLI
 
 - **MCP** — `rgx --server mcp` exposes `content_search` (returns the `--compact` paged view by
-  default; pass `page` to advance), `file_search`, and `status`. See [`docs/mcp.md`](docs/mcp.md).
+  default; pass the response `cursor` to advance, or `files_only`/`count` to orient), `file_search`,
+  and `status`. See [`docs/mcp.md`](docs/mcp.md).
 - **CLI** — a true drop-in for `rg`: `alias rg=rgx` and every command just gets faster. A bare
   `rgx <pattern>` is plain (accelerated) ripgrep; `rgx --find <name>` locates files; `--server`
   manages the daemon. See [`docs/cli.md`](docs/cli.md).

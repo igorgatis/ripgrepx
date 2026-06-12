@@ -175,8 +175,13 @@ fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
         Request::Search { opts, pattern } => {
             let _ = content_search(shared, &pattern, opts, &mut conn);
         }
-        Request::Find { needle, limit } => {
-            let _ = proto::write_data(&mut conn, &find(shared, &needle, limit as usize));
+        Request::Find {
+            needle,
+            after,
+            limit,
+        } => {
+            let out = find(shared, &needle, after.as_deref(), limit as usize);
+            let _ = proto::write_data(&mut conn, &out);
         }
         Request::Status => {
             let _ = proto::write_data(&mut conn, &status(shared));
@@ -235,21 +240,39 @@ fn content_search(
     }
 }
 
-fn find(shared: &Shared, needle: &str, limit: usize) -> Vec<u8> {
-    let mut out = String::new();
-    let mut push = |p: &Path| {
-        out.push_str(&p.to_string_lossy());
-        out.push('\n');
-    };
-    if shared.ready.load(Ordering::SeqCst) {
+/// File-name lookup, keyset-paginated. The response leads with a `proto::format_find_header` line so
+/// the client reports the true total (not just the page) and can resume via `next_after`.
+fn find(shared: &Shared, needle: &str, after: Option<&str>, limit: usize) -> Vec<u8> {
+    let (lines, total, start): (Vec<String>, usize, usize) = if shared.ready.load(Ordering::SeqCst)
+    {
         let idx = shared.read_index();
-        idx.find(needle, limit).into_iter().for_each(&mut push);
+        let (hits, total, start) = idx.find(needle, after, limit);
+        let lines = hits
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        (lines, total, start)
     } else {
-        index::walk_files(&shared.root)
+        let mut all: Vec<String> = index::walk_files(&shared.root)
             .iter()
             .filter(|p| p.to_string_lossy().contains(needle))
-            .take(limit)
-            .for_each(|p| push(p));
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        all.sort_unstable();
+        let total = all.len();
+        let start = after.map_or(0, |a| all.partition_point(|p| p.as_str() <= a));
+        let lines = all.into_iter().skip(start).take(limit).collect();
+        (lines, total, start)
+    };
+    // Offer a resume key only when matches genuinely remain past this page (we know the true total
+    // and the keyset offset), so following `next_after` never lands on an empty page.
+    let next_after = (start + lines.len() < total)
+        .then(|| lines.last().map(String::as_str))
+        .flatten();
+    let mut out = proto::format_find_header(total, start, lines.len(), next_after);
+    for l in &lines {
+        out.push_str(l);
+        out.push('\n');
     }
     out.into_bytes()
 }

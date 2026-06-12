@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use rgx::compact::{self, CompactOpts};
 use rgx::confirm::SearchOptions;
+use rgx::cursor::{self, Mode};
 use rgx::paths::resolve_root;
 use rgx::proto::Request;
 use rgx::{client, mcp, server};
@@ -50,8 +51,9 @@ fn main() -> ExitCode {
 fn usage() {
     eprintln!(
         "usage:\n  rgx [flags] <pattern> [path]            content search (accelerated ripgrep)\n  \
-         rgx --compact [--page N] <pattern> [path]  token-savings view: grouped + paged\n  \
-         rgx --find <name|path> [path]           find files/dirs by name\n  \
+         rgx --compact [opts] <pattern> [path]   token-savings view: grouped + paged\n    \
+         opts: --page-size N, -l/--files-with-matches, -c/--count, --cursor TOK (next page)\n  \
+         rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|status|watch|mcp]\n\nflags: -i -s -w -F -U -A<n> -B<n> -C<n> --"
     );
 }
@@ -147,40 +149,108 @@ fn server_cmd(rest: &[String]) -> ExitCode {
     }
 }
 
+const FIND_LIMIT: u32 = 1000;
+
 fn find_cmd(rest: &[String]) -> ExitCode {
-    let Some(needle) = rest.first() else {
-        eprintln!("usage: rgx --find <name|path> [path]");
+    let mut needle: Option<&str> = None;
+    let mut path: Option<&str> = None;
+    let mut after: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if a == "--after" || a.starts_with("--after=") {
+            let Some((v, consumed)) = long_value(rest, i, "--after") else {
+                eprintln!("rgx: --after needs a value");
+                return ExitCode::from(2);
+            };
+            after = Some(v.to_string());
+            i += consumed;
+            continue;
+        }
+        if needle.is_none() {
+            needle = Some(a);
+        } else if path.is_none() {
+            path = Some(a);
+        } else {
+            eprintln!("rgx: unexpected extra argument {a:?}");
+            return ExitCode::from(2);
+        }
+        i += 1;
+    }
+    let Some(needle) = needle else {
+        eprintln!("usage: rgx --find <name|path> [path] [--after PATH]");
         return ExitCode::from(2);
     };
-    let root = resolve_root(rest.get(1).map(String::as_str));
-    match client::request(
+    let root = resolve_root(path);
+    let bytes = match client::request(
         &root,
         &Request::Find {
-            needle: needle.clone(),
-            limit: 1000,
+            needle: needle.to_string(),
+            after,
+            limit: FIND_LIMIT,
         },
     ) {
-        Ok(out) => emit(out),
+        Ok(b) => b,
         Err(e) => {
             eprintln!("rgx: {e}");
-            ExitCode::from(2)
+            return ExitCode::from(2);
         }
+    };
+
+    let (header, body) = rgx::proto::parse_find_header(&bytes);
+    let mut out = std::io::stdout();
+    let Some(h) = header else {
+        // Headerless blob (older daemon): emit paths as-is.
+        let _ = out.write_all(body);
+        return if body.is_empty() {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        };
+    };
+    let first = if h.returned == 0 { 0 } else { h.start + 1 };
+    let _ = writeln!(
+        out,
+        "[files {first}-{} of {}]",
+        h.start + h.returned,
+        h.total
+    );
+    let _ = out.write_all(body);
+    if let Some(next) = h.next_after {
+        let scope = path
+            .map(|p| format!(" {}", shell_quote(p)))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "next: rgx --find {}{scope} --after {}",
+            shell_quote(needle),
+            shell_quote(&next)
+        );
+    }
+    if h.total == 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
 /// The leading-token flag surface shared by content search and `--compact`. `compact` additionally
-/// recognizes `--page N` / `-p N` / `--page=N`. Errors are reported here; the `Err` carries the exit
-/// code so callers just propagate it.
+/// recognizes `--cursor TOK` (resume, supersedes the pattern), `--page-size N`, and the `-l`/`-c`
+/// output modes. Errors are reported here; the `Err` carries the exit code so callers just propagate.
 struct ParsedSearch<'a> {
     opts: SearchOptions,
-    page: usize,
+    cursor: Option<&'a str>,
+    page_size: Option<usize>,
+    mode: Mode,
     positionals: Vec<&'a str>,
 }
 
 fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a>, ExitCode> {
     let mut opts = SearchOptions::default();
     let mut positionals: Vec<&str> = Vec::new();
-    let mut page = 1usize;
+    let mut cursor: Option<&str> = None;
+    let mut page_size: Option<usize> = None;
+    let mut mode = Mode::Matches;
     let mut only_positional = false; // set by `--`
     let mut i = 0;
 
@@ -200,15 +270,25 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
             "-w" | "--word-regexp" => opts.word = true,
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
-            p if compact && (p == "-p" || p == "--page" || p.starts_with("--page=")) => {
-                let (n, consumed) = match page_value(args, i) {
-                    Some(v) => v,
-                    None => {
-                        eprintln!("rgx: --page needs a number");
-                        return Err(ExitCode::from(2));
-                    }
+            "-l" | "--files-with-matches" if compact => mode = Mode::Files,
+            "-c" | "--count" if compact => mode = Mode::Count,
+            p if compact && (p == "--cursor" || p.starts_with("--cursor=")) => {
+                let Some((v, consumed)) = long_value(args, i, "--cursor") else {
+                    eprintln!("rgx: --cursor needs a value");
+                    return Err(ExitCode::from(2));
                 };
-                page = n.max(1);
+                cursor = Some(v);
+                i += consumed;
+                continue;
+            }
+            p if compact && (p == "--page-size" || p.starts_with("--page-size=")) => {
+                let n = long_value(args, i, "--page-size")
+                    .and_then(|(v, c)| v.parse().ok().map(|n: usize| (n, c)));
+                let Some((n, consumed)) = n else {
+                    eprintln!("rgx: --page-size needs a number");
+                    return Err(ExitCode::from(2));
+                };
+                page_size = Some(n.max(1));
                 i += consumed;
                 continue;
             }
@@ -240,7 +320,9 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
     }
     Ok(ParsedSearch {
         opts,
-        page,
+        cursor,
+        page_size,
+        mode,
         positionals,
     })
 }
@@ -314,19 +396,60 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
-    let opts = parsed.opts;
-    let Some((pattern, rest)) = parsed.positionals.split_first() else {
-        usage();
-        return ExitCode::from(2);
-    };
-    let pattern = pattern.to_string();
-    let path = rest.first().copied();
-    if rest.len() > 1 {
-        eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
-        return ExitCode::from(2);
-    }
-    let root = resolve_root(path);
 
+    // Resume from the cursor (which carries the whole query) when given, else build a fresh query
+    // from the flags + positionals. `prev` is the (total, fingerprint) at mint time, for the
+    // staleness check below.
+    let (pattern, opts, mode, start_after, page_size, root_hint, prev) = if let Some(tok) =
+        parsed.cursor
+    {
+        // The cursor is self-contained, so any co-supplied query flag would be silently dropped.
+        // Reject the combination explicitly rather than ignoring the flag.
+        let stray_flags = parsed.page_size.is_some()
+            || parsed.mode != Mode::Matches
+            || parsed.opts != SearchOptions::default();
+        if !parsed.positionals.is_empty() || stray_flags {
+            eprintln!("rgx: --cursor is self-contained; don't combine it with a pattern or flags");
+            return ExitCode::from(2);
+        }
+        let c = match cursor::decode(tok) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("rgx: invalid --cursor ({e})");
+                return ExitCode::from(2);
+            }
+        };
+        let start_after = c.last_path.clone().map(|p| (p, c.last_lineno));
+        (
+            c.pattern,
+            c.opts,
+            c.mode,
+            start_after,
+            c.page_size,
+            c.root_hint,
+            Some((c.prev_total, c.fingerprint)),
+        )
+    } else {
+        let Some((pattern, rest)) = parsed.positionals.split_first() else {
+            usage();
+            return ExitCode::from(2);
+        };
+        if rest.len() > 1 {
+            eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
+            return ExitCode::from(2);
+        }
+        (
+            pattern.to_string(),
+            parsed.opts,
+            parsed.mode,
+            None,
+            parsed.page_size.unwrap_or(compact::DEFAULT_PAGE_SIZE),
+            rest.first().map(|s| s.to_string()),
+            None,
+        )
+    };
+
+    let root = resolve_root(root_hint.as_deref());
     let raw = match rgx::collect_search(&root, &pattern, opts) {
         Ok(r) => r,
         Err(e) => {
@@ -339,22 +462,35 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         &pattern,
         opts,
         CompactOpts {
-            page: parsed.page,
-            ..Default::default()
+            mode,
+            start_after,
+            page_size,
+            max_cols: compact::DEFAULT_MAX_COLS,
         },
     );
 
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{}", page.header);
     let _ = out.write_all(page.body.as_bytes());
-    if page.has_more() {
-        let next = path.map_or_else(
-            || shell_quote(&pattern),
-            |p| format!("{} {}", shell_quote(&pattern), shell_quote(p)),
-        );
-        let _ = writeln!(out, "next: rgx --compact --page {} {next}", page.page + 1);
+    if let Some(note) = page.staleness_note(prev) {
+        let _ = writeln!(out, "note: {note}");
     }
-    if page.total_matches == 0 {
+    // Store the RESOLVED (absolute) root, not the raw positional, so following the cursor from a
+    // different working directory resolves the same tree (resolve_root is idempotent on an absolute
+    // path) rather than re-interpreting a relative path against the new cwd.
+    let root_hint = Some(root.to_string_lossy().into_owned());
+    if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint) {
+        let _ = writeln!(
+            out,
+            "next: rgx --compact --cursor {}",
+            shell_quote(&cursor::encode(&next))
+        );
+    }
+    let empty = match mode {
+        Mode::Matches => page.total_matches == 0,
+        _ => page.total_files == 0,
+    };
+    if empty {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
@@ -382,20 +518,14 @@ fn context_value(args: &[String], i: usize) -> Option<(usize, usize)> {
     }
 }
 
-/// Parse `--page=N` (inline) or `--page N` / `-p N` (separate); returns (value, args_consumed).
-fn page_value(args: &[String], i: usize) -> Option<(usize, usize)> {
-    if let Some(n) = args[i].strip_prefix("--page=") {
-        return n.parse().ok().map(|v| (v, 1));
-    }
-    args.get(i + 1).and_then(|v| v.parse().ok()).map(|n| (n, 2))
-}
-
-fn emit(out: Vec<u8>) -> ExitCode {
-    let _ = std::io::stdout().write_all(&out);
-    if out.is_empty() {
-        ExitCode::from(1)
+/// Parse a long flag's value: `--name=VALUE` (inline) or `--name VALUE` (separate). Returns
+/// `(value, args_consumed)`.
+fn long_value<'a>(args: &'a [String], i: usize, name: &str) -> Option<(&'a str, usize)> {
+    let prefix = format!("{name}=");
+    if let Some(v) = args[i].strip_prefix(&prefix) {
+        Some((v, 1))
     } else {
-        ExitCode::SUCCESS
+        args.get(i + 1).map(|v| (v.as_str(), 2))
     }
 }
 
@@ -412,34 +542,42 @@ mod tests {
         let args = argv(&["-i", "-w", "needle", "src/"]);
         let p = parse_search(&args, false).unwrap();
         assert!(p.opts.case_insensitive && p.opts.word);
-        assert_eq!(p.page, 1);
+        assert!(p.cursor.is_none());
         assert_eq!(p.positionals, vec!["needle", "src/"]);
     }
 
     #[test]
-    fn compact_accepts_page_in_all_forms() {
+    fn compact_accepts_cursor_page_size_and_modes() {
         for args in [
-            argv(&["--page", "3", "needle"]),
-            argv(&["-p", "3", "needle"]),
-            argv(&["--page=3", "needle"]),
+            argv(&["--page-size", "20", "needle"]),
+            argv(&["--page-size=20", "needle"]),
         ] {
             let p = parse_search(&args, true).unwrap();
-            assert_eq!(p.page, 3, "args: {args:?}");
+            assert_eq!(p.page_size, Some(20), "args: {args:?}");
             assert_eq!(p.positionals, vec!["needle"]);
         }
+        let cursor_args = argv(&["--cursor=ABC", "-l"]);
+        let c = parse_search(&cursor_args, true).unwrap();
+        assert_eq!(c.cursor, Some("ABC"));
+        assert_eq!(c.mode, Mode::Files);
+        let count_args = argv(&["-c", "needle"]);
+        let count = parse_search(&count_args, true).unwrap();
+        assert_eq!(count.mode, Mode::Count);
     }
 
     #[test]
-    fn page_flag_is_rejected_outside_compact() {
-        assert!(parse_search(&argv(&["--page", "2", "needle"]), false).is_err());
+    fn compact_only_flags_are_rejected_outside_compact() {
+        assert!(parse_search(&argv(&["--cursor", "x", "needle"]), false).is_err());
+        assert!(parse_search(&argv(&["--page-size", "2", "needle"]), false).is_err());
+        assert!(parse_search(&argv(&["-l", "needle"]), false).is_err());
     }
 
     #[test]
     fn double_dash_makes_flaglike_pattern_positional() {
-        let args = argv(&["--", "--page"]);
+        let args = argv(&["--", "--cursor"]);
         let p = parse_search(&args, true).unwrap();
-        assert_eq!(p.positionals, vec!["--page"]);
-        assert_eq!(p.page, 1);
+        assert_eq!(p.positionals, vec!["--cursor"]);
+        assert!(p.cursor.is_none());
     }
 
     #[test]

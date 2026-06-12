@@ -37,19 +37,23 @@ The skill text is version-controlled in [`assets/skill.md`](../assets/skill.md).
 - **content search** — run a ripgrep query (regex by default, plus the usual literal / case /
   whole-word / glob / type / path-scope / context options). The index selects candidate files,
   ripgrep confirms; the match set is identical to a plain `rg` run. Results are returned in the
-  token-savings view (grouped by file, paged) — pass `page` to fetch the next page.
+  token-savings view (grouped by file, paged) — pass the response's `cursor` to fetch the next page,
+  or `files_only` / `count` for a quick scope read.
 - **file search** — locate files/directories by partial name or path (find/fd-style).
 - **status** — what's indexed and whether an update is in flight.
 
 ## Response shape
 
 - Content matches come back grouped by file: a `path` line, then `  line: text` for each match
-  under it (context lines, when requested, use a `-` gutter). The leading header reports the page and
-  total match/file counts; a trailing hint says how to fetch the next page when one exists.
-- File search returns one path per line.
-- **Paging:** results are paged — the response reports the window and tells the agent to call again
-  with the next `page` — so an agent pulls more on demand instead of receiving one giant dump.
-  Paging is cheap (the index is warm); nothing is dropped, so every match is reachable.
+  under it (context lines, when requested, use a `-` gutter). The leading header reports the window
+  and the total match/file counts (`[matches 1-50 of 421 in 88 files]`), so the agent always knows
+  how much it has not seen; a trailing hint carries the cursor for the next page when one exists.
+- File search returns a `[files X-Y of N]` header then one path per line, with a trailing `after` hint
+  when more remain.
+- **Paging:** results are paged via an **opaque cursor** the agent echoes back — the cursor carries the
+  exact query and a keyset resume position, so the next page can't drift to a different search, and a
+  result set that changed between pages is reported with a `note:` line. Paging is cheap (the index is
+  warm); nothing is dropped, so every match is reachable.
 - **Freshness inline, only when actionable:** if a returned line no longer matches what's on disk,
   it's flagged so the agent re-reads that file rather than trusting stale text.
 
@@ -69,8 +73,10 @@ in sync with behavior (see `CLAUDE.md`).
 This page describes the intended interface; the current stdio server implements a subset:
 
 - **content_search** — `pattern` (regex) plus `case_insensitive` / `word` / `fixed_strings` /
-  `multi_line`, and `page`; results in the compact, paged, grouped-by-file view.
-- **file_search** — `query` substring over indexed paths.
+  `multi_line`, `page_size`, the `files_only` / `count` orientation modes, and `cursor` (resume,
+  supersedes the other args); results in the compact, paged, grouped-by-file view.
+- **file_search** — `query` substring over indexed paths, plus `limit` and `after` (keyset paging);
+  reports the true total.
 - **status** — index readiness and counts.
 
 Not yet wired through MCP: the rest of the ripgrep flag set (glob/type/path-scope/context are in the

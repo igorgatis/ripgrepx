@@ -17,8 +17,13 @@ pub enum Request {
         opts: SearchOptions,
         pattern: String,
     },
-    /// File/dir name lookup (fd/find-style).
-    Find { needle: String, limit: u32 },
+    /// File/dir name lookup (fd/find-style). `after` resumes a keyset page: only paths strictly
+    /// greater than it are returned (empty/None = from the start).
+    Find {
+        needle: String,
+        after: Option<String>,
+        limit: u32,
+    },
     /// Index health summary.
     Status,
     /// Subscribe to live status: the daemon streams a fresh status frame on each change (and a
@@ -28,7 +33,7 @@ pub enum Request {
     Shutdown,
 }
 
-fn pack_opts(o: &SearchOptions) -> u8 {
+pub(crate) fn pack_opts(o: &SearchOptions) -> u8 {
     (o.case_insensitive as u8)
         | ((o.multi_line as u8) << 1)
         | ((o.dot_matches_new_line as u8) << 2)
@@ -36,7 +41,7 @@ fn pack_opts(o: &SearchOptions) -> u8 {
         | ((o.fixed_strings as u8) << 4)
 }
 
-fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
+pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
     SearchOptions {
         case_insensitive: b & 1 != 0,
         multi_line: b & 2 != 0,
@@ -58,10 +63,15 @@ pub fn write_request(w: &mut impl Write, req: &Request) -> Result<()> {
             body.extend_from_slice(&(opts.after_context as u32).to_le_bytes());
             put_bytes(&mut body, pattern.as_bytes());
         }
-        Request::Find { needle, limit } => {
+        Request::Find {
+            needle,
+            after,
+            limit,
+        } => {
             body.push(b'F');
             body.extend_from_slice(&limit.to_le_bytes());
             put_bytes(&mut body, needle.as_bytes());
+            put_bytes(&mut body, after.as_deref().unwrap_or("").as_bytes());
         }
         Request::Status => body.push(b'T'),
         Request::Watch => body.push(b'W'),
@@ -86,13 +96,78 @@ pub fn read_request(r: &mut impl Read) -> Result<Request> {
         b'F' => {
             let limit = take_u32(&mut cur)?;
             let needle = String::from_utf8(take_bytes(&mut cur)?)?;
-            Request::Find { needle, limit }
+            let after = String::from_utf8(take_bytes(&mut cur)?)?;
+            let after = (!after.is_empty()).then_some(after);
+            Request::Find {
+                needle,
+                after,
+                limit,
+            }
         }
         b'T' => Request::Status,
         b'W' => Request::Watch,
         b'Q' => Request::Shutdown,
         other => bail!("unknown request tag {other}"),
     })
+}
+
+/// `Find` responses optionally lead with a one-line header
+/// `\x01<total>\t<start>\t<returned>\t<next_after>\n` so the client can report the true total (not
+/// just the truncated page), the keyset offset (`start` = items skipped before this page, for an
+/// honest "X-Y of N" range), and resume via `next_after`. The `0x01` sentinel can't begin a real path
+/// line, and older/headerless blobs parse as all-paths.
+pub const FIND_HEADER_SENTINEL: u8 = 0x01;
+
+pub struct FindHeader {
+    pub total: usize,
+    pub start: usize,
+    pub returned: usize,
+    pub next_after: Option<String>,
+}
+
+pub fn format_find_header(
+    total: usize,
+    start: usize,
+    returned: usize,
+    next_after: Option<&str>,
+) -> String {
+    format!(
+        "{}{total}\t{start}\t{returned}\t{}\n",
+        FIND_HEADER_SENTINEL as char,
+        next_after.unwrap_or("")
+    )
+}
+
+/// Split a `Find` response blob into its optional header and the remaining path lines.
+pub fn parse_find_header(blob: &[u8]) -> (Option<FindHeader>, &[u8]) {
+    if blob.first() != Some(&FIND_HEADER_SENTINEL) {
+        return (None, blob);
+    }
+    let Some(nl) = blob.iter().position(|&b| b == b'\n') else {
+        return (None, blob);
+    };
+    let line = String::from_utf8_lossy(&blob[1..nl]);
+    // `splitn(4)` keeps next_after (a file path) intact even if it contains a tab — the three numeric
+    // fields are tab-delimited, and everything after the third tab is the path verbatim.
+    let mut parts = line.splitn(4, '\t');
+    let total = parts.next().and_then(|s| s.parse().ok());
+    let start = parts.next().and_then(|s| s.parse().ok());
+    let returned = parts.next().and_then(|s| s.parse().ok());
+    match (total, start, returned) {
+        (Some(total), Some(start), Some(returned)) => {
+            let next_after = parts.next().filter(|s| !s.is_empty()).map(str::to_string);
+            (
+                Some(FindHeader {
+                    total,
+                    start,
+                    returned,
+                    next_after,
+                }),
+                &blob[nl + 1..],
+            )
+        }
+        _ => (None, blob),
+    }
 }
 
 /// Responses are a stream of non-empty data frames terminated by a zero-length frame, so the daemon
@@ -235,11 +310,37 @@ mod tests {
         });
         roundtrip(Request::Find {
             needle: "config".into(),
+            after: None,
+            limit: 50,
+        });
+        roundtrip(Request::Find {
+            needle: "config".into(),
+            after: Some("src/config.rs".into()),
             limit: 50,
         });
         roundtrip(Request::Status);
         roundtrip(Request::Watch);
         roundtrip(Request::Shutdown);
+    }
+
+    #[test]
+    fn find_header_roundtrips_and_tolerates_headerless() {
+        let blob = format!(
+            "{}src/a.rs\nsrc/b.rs\n",
+            format_find_header(1342, 200, 2, Some("src/b.rs"))
+        );
+        let (header, rest) = parse_find_header(blob.as_bytes());
+        let header = header.unwrap();
+        assert_eq!(header.total, 1342);
+        assert_eq!(header.start, 200);
+        assert_eq!(header.returned, 2);
+        assert_eq!(header.next_after.as_deref(), Some("src/b.rs"));
+        assert_eq!(rest, b"src/a.rs\nsrc/b.rs\n");
+
+        // A headerless blob (no sentinel) parses as all paths.
+        let (none, rest) = parse_find_header(b"src/a.rs\n");
+        assert!(none.is_none());
+        assert_eq!(rest, b"src/a.rs\n");
     }
 
     #[test]

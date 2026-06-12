@@ -17,6 +17,7 @@ use anyhow::Result;
 pub mod client;
 pub mod compact;
 pub mod confirm;
+pub mod cursor;
 pub mod index;
 pub mod mcp;
 pub mod paths;
@@ -106,9 +107,10 @@ pub fn stream_full_scan(
 
 /// Run a content search and buffer the whole `path:line:text` output, for callers that need the
 /// entire result at once (the compact/paged view) rather than a stream. Trigram-accelerable patterns
-/// go through the daemon (already path-sorted); fallback patterns scan in-process, where the parallel
-/// walk emits files in nondeterministic order — so we sort the per-file blocks, making the page
-/// windows reproducible across runs (the `next page` hint must resume the same sequence).
+/// go through the daemon (emitted in index file-id order, NOT path order); fallback patterns scan
+/// in-process in nondeterministic order. Neither is guaranteed sorted, so the compact view sorts the
+/// matches itself (see `compact::format`); the fallback block-sort here is a cheap extra that keeps
+/// even the raw buffered bytes deterministic across runs.
 pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
     if is_fallback(pattern, opts) {
         let chunks = std::sync::Mutex::new(Vec::<Vec<u8>>::new());

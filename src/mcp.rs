@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use crate::client;
 use crate::compact::{self, CompactOpts};
 use crate::confirm::SearchOptions;
+use crate::cursor::{self, Mode};
 use crate::proto::Request;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -74,38 +75,69 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
     let args = params.and_then(|p| p.get("arguments"));
     match name {
         Some("content_search") => {
-            let Some(pattern) = args.and_then(|a| a.get("pattern")).and_then(Value::as_str) else {
-                return error(id, -32602, "missing required argument 'pattern'");
+            // A cursor carries the entire query + resume position, so it supersedes the other args.
+            let query = if let Some(tok) = arg_str(args, "cursor") {
+                match cursor::decode(tok) {
+                    Ok(c) => Query {
+                        start_after: c.last_path.clone().map(|p| (p, c.last_lineno)),
+                        prev: Some((c.prev_total, c.fingerprint)),
+                        pattern: c.pattern,
+                        opts: c.opts,
+                        mode: c.mode,
+                        page_size: c.page_size,
+                    },
+                    Err(e) => return error(id, -32602, &format!("invalid cursor: {e}")),
+                }
+            } else {
+                let Some(pattern) = arg_str(args, "pattern") else {
+                    return error(id, -32602, "missing required argument 'pattern'");
+                };
+                Query {
+                    pattern: pattern.to_string(),
+                    opts: SearchOptions {
+                        case_insensitive: arg_bool(args, "case_insensitive"),
+                        word: arg_bool(args, "word"),
+                        fixed_strings: arg_bool(args, "fixed_strings"),
+                        multi_line: arg_bool(args, "multi_line"),
+                        ..Default::default()
+                    },
+                    mode: if arg_bool(args, "count") {
+                        Mode::Count
+                    } else if arg_bool(args, "files_only") {
+                        Mode::Files
+                    } else {
+                        Mode::Matches
+                    },
+                    start_after: None,
+                    page_size: arg_usize(args, "page_size").unwrap_or(compact::DEFAULT_PAGE_SIZE),
+                    prev: None,
+                }
             };
-            let opts = SearchOptions {
-                case_insensitive: arg_bool(args, "case_insensitive"),
-                word: arg_bool(args, "word"),
-                fixed_strings: arg_bool(args, "fixed_strings"),
-                multi_line: arg_bool(args, "multi_line"),
-                ..Default::default()
-            };
-            let page = arg_usize(args, "page").unwrap_or(1);
-            tool_result(id, &compact_search(root, pattern, opts, page))
+            tool_result(id, &compact_search(root, query))
         }
         Some("file_search") => {
-            let Some(query) = args.and_then(|a| a.get("query")).and_then(Value::as_str) else {
+            let Some(query) = arg_str(args, "query") else {
                 return error(id, -32602, "missing required argument 'query'");
             };
-            tool_result(
-                id,
-                &run_request(
-                    root,
-                    &Request::Find {
-                        needle: query.to_string(),
-                        limit: 200,
-                    },
-                ),
-            )
+            let limit = arg_usize(args, "limit").unwrap_or(200) as u32;
+            let after = arg_str(args, "after").map(str::to_string);
+            tool_result(id, &file_search(root, query, after, limit))
         }
         Some("status") => tool_result(id, &run_request(root, &Request::Status)),
         Some(other) => error(id, -32602, &format!("unknown tool {other:?}")),
         None => error(id, -32602, "missing tool name"),
     }
+}
+
+/// A resolved content query: from explicit args, or unpacked from a `cursor`.
+struct Query {
+    pattern: String,
+    opts: SearchOptions,
+    mode: Mode,
+    start_after: Option<(String, u64)>,
+    page_size: usize,
+    /// `(total, fingerprint)` when resuming a cursor, for the staleness note.
+    prev: Option<(usize, u64)>,
 }
 
 fn arg_bool(args: Option<&Value>, key: &str) -> bool {
@@ -120,28 +152,71 @@ fn arg_usize(args: Option<&Value>, key: &str) -> Option<usize> {
         .map(|n| n as usize)
 }
 
+fn arg_str<'a>(args: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    args.and_then(|a| a.get(key)).and_then(Value::as_str)
+}
+
 /// Run a content search and return the token-savings view: results grouped by file and paged, with a
-/// hint to fetch the next page. Matching is identical to `rg`; only presentation differs (see
+/// cursor to fetch the next page. Matching is identical to `rg`; only presentation differs (see
 /// `compact`). Paging is cheap (warm index), so an agent pulls more on demand rather than dumping all.
-fn compact_search(root: &Path, pattern: &str, opts: SearchOptions, page: usize) -> String {
-    let raw = match crate::collect_search(root, pattern, opts) {
+fn compact_search(root: &Path, q: Query) -> String {
+    let raw = match crate::collect_search(root, &q.pattern, q.opts) {
         Ok(b) => b,
         Err(e) => return format!("error: {e}"),
     };
     let p = compact::format(
         &raw,
-        pattern,
-        opts,
+        &q.pattern,
+        q.opts,
         CompactOpts {
-            page,
-            ..Default::default()
+            mode: q.mode,
+            start_after: q.start_after,
+            page_size: q.page_size,
+            max_cols: compact::DEFAULT_MAX_COLS,
         },
     );
     let mut text = format!("{}\n{}", p.header, p.body);
-    if p.has_more() {
+    if let Some(note) = p.staleness_note(q.prev) {
+        text.push_str(&format!("\nnote: {note}"));
+    }
+    // root_hint is None: the MCP server root is authoritative, so the cursor never carries a path.
+    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None) {
         text.push_str(&format!(
-            "\n(more: call content_search with page: {})",
-            p.page + 1
+            "\n(more: call content_search with cursor: \"{}\")",
+            cursor::encode(&next)
+        ));
+    }
+    text
+}
+
+/// File-name search returning the token-savings shape: a `[files X-Y of N]` header, one path per
+/// line, and a hint to fetch more (the daemon reports the true total and the keyset resume key).
+fn file_search(root: &Path, query: &str, after: Option<String>, limit: u32) -> String {
+    let bytes = match client::request(
+        root,
+        &Request::Find {
+            needle: query.to_string(),
+            after,
+            limit,
+        },
+    ) {
+        Ok(b) => b,
+        Err(e) => return format!("error: {e}"),
+    };
+    let (header, body) = crate::proto::parse_find_header(&bytes);
+    let body = String::from_utf8_lossy(body);
+    let Some(h) = header else {
+        return body.into_owned();
+    };
+    let first = if h.returned == 0 { 0 } else { h.start + 1 };
+    let mut text = format!(
+        "[files {first}-{} of {}]\n{body}",
+        h.start + h.returned,
+        h.total
+    );
+    if let Some(next) = h.next_after {
+        text.push_str(&format!(
+            "\n(more: call file_search with after: \"{next}\")"
         ));
     }
     text
@@ -161,27 +236,44 @@ fn tools() -> Value {
             "description": concat!(
                 "Search file contents with a regex (ripgrep semantics, accelerated by an index). ",
                 "Results are grouped by file and paged: the match set is identical to ripgrep, nothing ",
-                "is dropped. Paging is cheap (the index is warm), so narrow the pattern when you can, ",
-                "but prefer fetching the next page over a broad dump. Long lines are trimmed around the ",
-                "match (read the file for the full line)."
+                "is dropped. The header reports the total match/file count, so you know how much you ",
+                "have NOT seen; when more remains, fetch it by passing the opaque `cursor` from the ",
+                "response (it carries the exact same query, so the next page can't drift). Paging is ",
+                "cheap (the index is warm). For a quick sense of scope, use `files_only` (paths only) ",
+                "or `count` (per-file counts) instead of a page-walk. Long lines are trimmed around ",
+                "the match (read the file for the full line)."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string"},
+                    "pattern": {"type": "string", "description": "required for a new search; omit when paging via cursor"},
                     "case_insensitive": {"type": "boolean"},
                     "word": {"type": "boolean", "description": "match only whole words (-w)"},
                     "fixed_strings": {"type": "boolean", "description": "treat pattern as a literal (-F)"},
                     "multi_line": {"type": "boolean"},
-                    "page": {"type": "integer", "description": "1-based page number; the response tells you when more pages exist"}
-                },
-                "required": ["pattern"]
+                    "files_only": {"type": "boolean", "description": "list matching file paths only (-l)"},
+                    "count": {"type": "boolean", "description": "per-file match counts only (-c)"},
+                    "page_size": {"type": "integer", "description": "matches (or files, for -l/-c) per page; default 50"},
+                    "cursor": {"type": "string", "description": "opaque token from a previous response; fetches the next page and supersedes all other args"}
+                }
             }
         },
         {
             "name": "file_search",
-            "description": "Find files/directories by name or path substring (fd/find-style). Returns one path per line.",
-            "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
+            "description": concat!(
+                "Find files/directories by name or path substring (fd/find-style). Returns a header ",
+                "with the true total, then one path per line; when more remain than the page holds, ",
+                "the response gives an `after` key to fetch the next page."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "description": "max paths per page; default 200"},
+                    "after": {"type": "string", "description": "resume key from a previous response (keyset paging)"}
+                },
+                "required": ["query"]
+            }
         },
         {
             "name": "status",
@@ -226,11 +318,20 @@ mod tests {
     }
 
     #[test]
-    fn content_search_advertises_paging() {
+    fn content_search_advertises_cursor_paging() {
         let listed = tools().to_string();
         assert!(listed.contains("content_search"));
-        assert!(listed.contains("\"page\""));
-        assert!(listed.contains("page number"));
+        assert!(listed.contains("\"cursor\""));
+        assert!(listed.contains("\"page_size\""));
+        assert!(!listed.contains("\"page\""));
+    }
+
+    #[test]
+    fn file_search_advertises_keyset_paging() {
+        let listed = tools().to_string();
+        assert!(listed.contains("file_search"));
+        assert!(listed.contains("\"after\""));
+        assert!(listed.contains("\"limit\""));
     }
 
     #[test]

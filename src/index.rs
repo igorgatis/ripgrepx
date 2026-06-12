@@ -185,19 +185,34 @@ impl Index {
             .collect()
     }
 
-    /// File/dir name lookup (fd/find-style): live paths whose string contains `needle`. Sorted before
-    /// truncation so the result is deterministic and `limit` keeps a stable (path-ordered) prefix
-    /// rather than an arbitrary subset of entry-insertion order.
-    pub fn find(&self, needle: &str, limit: usize) -> Vec<&Path> {
+    /// File/dir name lookup (fd/find-style): live paths whose string contains `needle`. Returns the
+    /// keyset page (paths whose string is strictly greater than `after`, capped at `limit`), the total
+    /// number of matches, and `start` (matches skipped before this page) so callers can report an
+    /// honest "X-Y of total". Sorted by path string — the same order callers keyset on — so paging is
+    /// deterministic and never skips or repeats.
+    pub fn find(
+        &self,
+        needle: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> (Vec<&Path>, usize, usize) {
         let mut hits: Vec<&Path> = self
             .entries
             .iter()
             .filter(|e| e.live && e.path.to_string_lossy().contains(needle))
             .map(|e| e.path.as_path())
             .collect();
-        hits.sort_unstable();
+        // Sort by the path string (the order callers keyset on). `sort_by_cached_key` decodes each
+        // path to a String once (O(n)), versus a comparator that would re-decode both sides on every
+        // one of the O(n log n) comparisons.
+        hits.sort_by_cached_key(|p| p.to_string_lossy().into_owned());
+        let total = hits.len();
+        let start = after.map_or(0, |a| {
+            hits.partition_point(|p| p.to_string_lossy().as_ref() <= a)
+        });
+        hits.drain(..start);
         hits.truncate(limit);
-        hits
+        (hits, total, start)
     }
 
     /// Approximate resident size of the posting lists (serialized roaring bytes), for status.
@@ -550,6 +565,30 @@ mod tests {
         std::fs::remove_file(tmp.join("a.txt")).unwrap();
         idx.apply_changes(&[], &[tmp.join("a.txt")]);
         assert_eq!(names(idx.candidates(&q)), vec!["b.txt"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn find_returns_total_and_keyset_page() {
+        let tmp = std::env::temp_dir().join(format!("rgx_find_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        for n in ["conf_a.txt", "conf_b.txt", "conf_c.txt", "other.txt"] {
+            write(&tmp, n, b"x\n");
+        }
+        let idx = Index::build(&tmp);
+
+        let (page, total, start) = idx.find("conf", None, 2);
+        assert_eq!(total, 3);
+        assert_eq!(start, 0);
+        assert_eq!(names(page.clone()), vec!["conf_a.txt", "conf_b.txt"]);
+
+        // Resume after the last path of the first page; total stays the full match count.
+        let after = page.last().unwrap().to_string_lossy().into_owned();
+        let (page2, total2, start2) = idx.find("conf", Some(&after), 2);
+        assert_eq!(total2, 3);
+        assert_eq!(start2, 2);
+        assert_eq!(names(page2), vec!["conf_c.txt"]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

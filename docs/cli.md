@@ -32,8 +32,8 @@ position goes straight to ripgrep). Three are search modes; `--server` gates eve
 | Command | Purpose |
 | --- | --- |
 | `rgx <pattern> [rg flags...]` | Content search via ripgrep, accelerated. |
-| `rgx --compact [--page N] <pattern> [rg flags...]` | Same search, token-savings view: grouped by file, paged. |
-| `rgx --find <name\|path>` | Locate files/directories by name or path (find/fd-style). |
+| `rgx --compact [opts] <pattern> [rg flags...]` | Same search, token-savings view: grouped by file, paged. |
+| `rgx --find <name\|path> [path] [--after PATH]` | Locate files/directories by name or path (find/fd-style). |
 | `rgx --skill` | Install the agent skill that teaches tools to use `rgx` (one-shot). |
 
 ### `--compact` — the token-savings view
@@ -42,14 +42,23 @@ position goes straight to ripgrep). Three are search modes; `--server` gates eve
 a denser view):
 
 - **Grouped by file** — the path is printed once, then `  line: text` for each match under it.
-- **Paged** — a page of matches at a time; the footer prints the exact command for the next page
-  (`next: rgx --compact --page 2 '<pattern>' <path>`). Select a page with `--page N` (or `-p N`).
+- **Header reports the totals** — `[matches 1-50 of 421 in 88 files]`, so you always know how much you
+  have *not* seen.
+- **Paged by an opaque cursor** — a page of matches at a time; when more remain the footer prints the
+  exact next command (`next: rgx --compact --cursor '<token>'`). The cursor carries the entire query
+  (pattern + every flag) plus a keyset resume position, so the next page can't drift to a different
+  search and a result set that changed between pages is reported with a `note:` line. Set the page
+  size with `--page-size N` (default 50).
+- **Orientation modes** — `-l` / `--files-with-matches` lists matching paths only; `-c` / `--count`
+  lists `path:count` per file. Both answer "where / how many" in one call instead of a page-walk, and
+  both page the same way (by file).
 - **Long lines trimmed** — lines longer than the column budget are truncated around the match, marked
   with `…`; read the file for the full line.
 
 This is the one rgx surface whose output is **not** byte-for-byte `rg`. The match set is still exactly
 ripgrep's — nothing is added or silently dropped; pagination is the only volume control, so every
-match is reachable. All the usual search flags (`-i`, `-w`, `-F`, `-C`, …) still apply.
+match is reachable. All the usual search flags (`-i`, `-w`, `-F`, `-C`, …) still apply (and a cursor
+preserves them across pages).
 
 ### `--server` — manage the index server
 
@@ -82,5 +91,6 @@ rgx -- --server        # everything after -- is positional
   reloads its config without a restart.
 - The background indexer **starts on first use**, so you rarely need `--server start`/`stop`
   directly; they exist for explicit control (CI, scripted warm-up, teardown).
-- `--find` covers the common case directly. Richer file-search options are an open design point —
-  see [`design.md`](design.md#open-questions).
+- `--find` reports the true total (`[files 1-1000 of N]`) and never silently truncates: when more
+  match than the page holds, the footer prints a `next: … --after '<path>'` command (keyset paging).
+  Richer file-search options are an open design point — see [`design.md`](design.md#open-questions).

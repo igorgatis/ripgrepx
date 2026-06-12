@@ -24,6 +24,7 @@ pkg-fmt = "zip"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 regex-syntax = "0.8"
 ignore = "0.4"
 rayon = "1"

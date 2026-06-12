@@ -63,7 +63,9 @@ possible — four, and only ever recognized as the **leading token**:
 - **Search modes** — the bare `<pattern>` (content) and `--find` (file/dir names). These are
   searches, so they belong next to rg's flags.
 - **`--compact`** — the same content search rendered as the token-savings view (grouped + paged); it
-  also accepts `--page N`. An opt-in modifier, so the bare search stays `rg`-identical.
+  also accepts `--page-size N`, the `-l`/`-c` orientation modes, and `--cursor TOK` to fetch the next
+  page (an opaque, self-contained cursor — see [`cli.md`](cli.md)). An opt-in modifier, so the bare
+  search stays `rg`-identical.
 - **`--skill`** — a one-shot install of the agent skill.
 - **`--server` (the gate)** — flips rgx out of ripgrep-passthrough into its own subcommand grammar
   (`start`, `stop`, `status`, `mcp`). Everything daemon-related lives behind it, so management never
