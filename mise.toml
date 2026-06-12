@@ -2,6 +2,9 @@
 hyperfine = "latest"
 rust = { version = "1.96.0", components = "clippy,rustfmt" }
 fd = "latest"
+# Pinned so the differential walk-parity tests diff rgx against a known `rg` whose ignore/grep engine
+# matches what rgx links (ignore 0.4.x); tests skip gracefully when `rg` isn't on PATH.
+ripgrep = "15.1.0"
 
 [env]
 RUST_BACKTRACE = "1"

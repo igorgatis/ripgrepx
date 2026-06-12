@@ -557,20 +557,6 @@ mod tests {
     }
 
     #[test]
-    fn walk_honors_rgignore_like_ripgrep() {
-        let tmp = std::env::temp_dir().join(format!("rgx_rgignore_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        write(&tmp, "a.txt", b"NEEDLE\n");
-        write(&tmp, "b.txt", b"NEEDLE\n");
-        write(&tmp, ".rgignore", b"b.txt\n");
-        let files = walk_files(&tmp);
-        let got = names(files.iter().map(PathBuf::as_path).collect());
-        assert_eq!(got, vec!["a.txt"]);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
     fn incremental_add_change_remove() {
         let tmp = std::env::temp_dir().join(format!("rgx_inc_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
