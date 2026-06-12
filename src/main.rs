@@ -652,14 +652,23 @@ fn check_filter(filter: &FilterSpec, root: &Path) -> Result<(), ExitCode> {
     })
 }
 
-/// Validate the `--sort`/`--weights` pairing: `weight` needs weights, and weights apply only to it.
-fn check_sort(sort: SortSpec, weights: Option<&str>) -> Result<(), ExitCode> {
+/// Validate the `--sort`/`--weights`/`-F` coherence: `weight` needs weights, weights apply only to it,
+/// and `-F` (fixed strings) can't drive weighted match (which needs `<label>` regex annotations).
+/// `fixed_strings` is the *original* flag — `-e` combining may later clear it, so check it here, before
+/// that, or the rejection is silently bypassed by multiple `-e` patterns.
+fn check_sort(sort: SortSpec, weights: Option<&str>, fixed_strings: bool) -> Result<(), ExitCode> {
     if sort.needs_weights() && weights.is_none() {
         eprintln!("rgx: --sort=weight needs --weights=label:weight,...");
         return Err(ExitCode::from(2));
     }
     if !sort.needs_weights() && weights.is_some() {
         eprintln!("rgx: --weights applies only to --sort=weight");
+        return Err(ExitCode::from(2));
+    }
+    if sort.needs_weights() && fixed_strings {
+        eprintln!(
+            "rgx: --sort=weight cannot be combined with -F (fixed strings has no branches to weight)"
+        );
         return Err(ExitCode::from(2));
     }
     Ok(())
@@ -670,20 +679,18 @@ fn content_cmd(args: &[String]) -> ExitCode {
         Ok(p) => p,
         Err(code) => return code,
     };
+    // Validate sort/weights/-F coherence before resolve_pattern — using the original `parsed.opts`, so
+    // `-e` combining (which clears fixed_strings) can't bypass the -F+weight rejection. Doing it first
+    // also keeps error precedence consistent with compact_cmd.
+    if let Err(code) = check_sort(parsed.sort, parsed.weights, parsed.opts.fixed_strings) {
+        return code;
+    }
     let (pattern, opts, paths) = match resolve_pattern(&parsed) {
         Ok(t) => t,
         Err(code) => return code,
     };
     let path = paths.first().copied();
     let root = resolve_root(path);
-
-    // Validate the sort/weights pairing before dispatch — unconditionally, so `--weights` without
-    // `--sort=weight` is rejected here too. Otherwise it would slip past the no-op guard below and the
-    // annotated pattern (`<label>` tags) would reach the plain streaming search verbatim, changing the
-    // match set.
-    if let Err(code) = check_sort(parsed.sort, parsed.weights) {
-        return code;
-    }
     if let Err(code) = check_filter(&parsed.filter, &root) {
         return code;
     }
@@ -848,7 +855,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             prev: Some((c.prev_total, c.fingerprint)),
         }
     } else {
-        if let Err(code) = check_sort(parsed.sort, parsed.weights) {
+        if let Err(code) = check_sort(parsed.sort, parsed.weights, parsed.opts.fixed_strings) {
             return code;
         }
         let (pattern, opts, paths) = match resolve_pattern(&parsed) {
@@ -1005,6 +1012,17 @@ mod tests {
         let p = parse_search(&args, false).unwrap();
         assert!(p.opts.invert && p.opts.hidden && p.opts.no_ignore);
         assert_eq!(p.positionals, vec!["needle"]);
+    }
+
+    #[test]
+    fn check_sort_rejects_fixed_strings_with_weight() {
+        let weight = rgx::sort::parse("weight", false).unwrap();
+        let modified = rgx::sort::parse("modified", false).unwrap();
+        // -F is incompatible with weighted match (the guard `-e` combining must not bypass).
+        assert!(check_sort(weight, Some("w:1"), true).is_err());
+        assert!(check_sort(weight, Some("w:1"), false).is_ok());
+        // -F is fine with any other sort key.
+        assert!(check_sort(modified, None, true).is_ok());
     }
 
     #[test]
