@@ -88,7 +88,7 @@ FOR AI AGENTS — works with Claude Code, Codex, and any MCP client; see `rgx --
   next page, `-l` files only, `-c` per-file counts. The cursor carries the whole query, so paging
   can't drift; a result set that changed gets a `note:`.
   MCP — `rgx --agent mcp` (stdio) exposes content_search (compact paged view), file_search, status.
-  Skill — `rgx --agent skill` prints it; `rgx --agent install` installs it + prints MCP setup.
+  Install — `rgx --agent install [claude|codex|cursor|gemini|vscode]` writes a per-agent bundle.
 
 Docs: https://github.com/igorgatis/ripgrepx
 ";
@@ -115,23 +115,21 @@ resident forever) and respawns on the next one. A repo whose cold build is cheap
 
 /// `rgx --agent --help` (or `--help --agent`): the AI-agent surface, with setup for the common hosts.
 const AGENT_HELP: &str = "\
-rgx --agent — integrate rgx with AI coding agents (Claude Code, Codex, or any MCP client).
+rgx --agent — integrate rgx with AI coding agents.
 
-  rgx --agent mcp       run the stdio MCP server: content_search, file_search, status
-  rgx --agent skill     print the agent skill (teaches a model to prefer rgx over rg/grep/find/fd)
-  rgx --agent install   install the skill into ~/.claude/skills (or $RGX_SKILL_DIR) + print MCP setup
+  rgx --agent mcp                       run the stdio MCP server: content_search, file_search, status
+  rgx --agent skill                     print the agent skill (markdown) to stdout
+  rgx --agent install   [TARGET...]     install the rgx bundle for each agent
+  rgx --agent uninstall [TARGET...]     remove what install wrote
+  rgx --agent list                      show detected agents and install status
 
-MCP setup — register `rgx --agent mcp` as a stdio server (content_search, file_search, status):
-  Claude Code   claude mcp add rgx -- rgx --agent mcp
-  Codex         codex mcp add rgx -- rgx --agent mcp
-  Gemini CLI    gemini mcp add rgx -- rgx --agent mcp
-  VS Code       code --add-mcp '{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}'
-  Cursor/other  add to the client's MCP config (e.g. .cursor/mcp.json):
-                  \"mcpServers\": { \"rgx\": { \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] } }
+TARGET (omit to auto-detect installed agents): claude  codex  cursor  gemini  vscode
+Scope: --user (default for claude/codex/gemini) or --project (default for cursor/vscode).
 
-Skill — `rgx --agent skill` is plain markdown. Claude Code loads it from ~/.claude/skills/rgx/SKILL.md
-(what `install` writes); for Codex/Gemini/Cursor/others, append it to AGENTS.md / GEMINI.md / the
-agent's rules/instructions file.
+install writes only where rgx owns the namespace — Claude skill dir, a Gemini extension — or edits
+shared files idempotently (a removable marked block in AGENTS.md / copilot-instructions, a merged
+\"rgx\" key in .cursor/mcp.json / .vscode/mcp.json). MCP registration that belongs to a host's own CLI
+(claude/codex mcp add) is printed for you to run, never executed.
 ";
 
 fn server_cmd(rest: &[String]) -> ExitCode {
@@ -226,9 +224,9 @@ fn server_cmd(rest: &[String]) -> ExitCode {
     }
 }
 
-/// `rgx --agent <mcp|skill|install>`: the AI-agent surface. `mcp` runs the stdio MCP server; `skill`
-/// prints the agent skill; `install` writes it under the skills dir and prints MCP setup. `--help`
-/// prints the agent guide; a missing subcommand is an error.
+/// `rgx --agent <mcp|skill|install|uninstall|list>`: the AI-agent surface. `mcp` runs the stdio MCP
+/// server; `skill` prints the agent skill; `install`/`uninstall` manage per-agent bundles; `list`
+/// shows status. `--help` prints the agent guide; a missing subcommand is an error.
 fn agent_cmd(rest: &[String]) -> ExitCode {
     match rest.first().map(String::as_str) {
         Some("mcp") => match mcp::run(resolve_root(None)) {
@@ -242,25 +240,32 @@ fn agent_cmd(rest: &[String]) -> ExitCode {
             rgx::skill::print_skill();
             ExitCode::SUCCESS
         }
-        Some("install") => match rgx::skill::install() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("rgx --agent install: {e}");
-                ExitCode::from(2)
-            }
-        },
+        Some("install") => agent_result("install", rgx::skill::install_cli(&rest[1..])),
+        Some("uninstall") => agent_result("uninstall", rgx::skill::uninstall_cli(&rest[1..])),
+        Some("list") => agent_result("list", rgx::skill::list()),
         Some("-h" | "--help" | "help") => {
             print!("{AGENT_HELP}");
             ExitCode::SUCCESS
         }
         None => {
             eprintln!(
-                "rgx --agent: pick a subcommand (mcp|skill|install); see `rgx --agent --help`"
+                "rgx --agent: pick a subcommand (mcp|skill|install|uninstall|list); \
+                 see `rgx --agent --help`"
             );
             ExitCode::from(2)
         }
         Some(other) => {
             eprintln!("rgx --agent: unknown subcommand {other:?}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn agent_result(name: &str, r: anyhow::Result<()>) -> ExitCode {
+    match r {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rgx --agent {name}: {e}");
             ExitCode::from(2)
         }
     }

@@ -47,35 +47,35 @@ On **Windows**, use npm, pipx, Cargo, or the release `.zip` (`x86_64-pc-windows-
 ## For AI agents
 
 `rgx` is built first for AI coding agents: fast, token-frugal code search an agent calls over **MCP**
-or as a **CLI**. After installing the binary above, wire it into your agent in two steps.
+or as a **CLI**. After installing the binary above, one command wires it into your agent:
 
-**1. Teach the agent** to prefer rgx over rg/grep/find/fd. For Claude Code, `rgx --agent install`
-writes the skill to `~/.claude/skills/rgx/SKILL.md`; for any other agent, `rgx --agent skill` prints
-the same markdown — append it to that agent's instructions/rules file.
+```sh
+rgx --agent install            # auto-detect installed agents and install the rgx bundle for each
+rgx --agent install codex      # or name one or more: claude, codex, cursor, gemini, vscode
+rgx --agent list               # show detected agents + install status
+rgx --agent uninstall          # remove exactly what install wrote
+```
 
-**2. (optional) Register the MCP server** — exposes `content_search`, `file_search`, and `status` as
-tools. The recommended setup per agent:
+`install` is deliberately non-intrusive: it writes **only where rgx owns the namespace** (Claude's
+skill dir, a Gemini extension), and for shared files it edits **idempotently** — a removable marked
+block in `AGENTS.md` / `copilot-instructions.md`, or a merged `"rgx"` key in `.cursor/mcp.json` /
+`.vscode/mcp.json`. It never blind-appends to a file you authored, and `uninstall` reverses it
+exactly. MCP registration that belongs to a host's own CLI (`claude`/`codex mcp add`) is **printed
+for you to run**, not executed.
 
-| Agent | Teach the agent (skill / rules) | Register the MCP server |
+| Agent | What it installs | Scope (`--user` / `--project`) |
 | --- | --- | --- |
-| **Claude Code** | `rgx --agent install` | `claude mcp add rgx -- rgx --agent mcp` |
-| **Codex** | `rgx --agent skill >> AGENTS.md` | `codex mcp add rgx -- rgx --agent mcp` |
-| **Cursor** | `rgx --agent skill > .cursor/rules/rgx.md` | add the JSON below to `.cursor/mcp.json` |
-| **Gemini CLI** | `rgx --agent skill >> GEMINI.md` | `gemini mcp add rgx -- rgx --agent mcp` |
-| **VS Code (Copilot)** | `rgx --agent skill >> .github/copilot-instructions.md` | `code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'` |
-| **Any MCP client** | paste `rgx --agent skill` into its instructions | the JSON below |
+| **Claude Code** | `…/.claude/skills/rgx/SKILL.md` + prints `claude mcp add` | user (default) or project |
+| **Codex** | marked block in `…/.codex/AGENTS.md` + prints `codex mcp add` | user (default) or project |
+| **Gemini CLI** | `…/.gemini/extensions/rgx/` (manifest + context, carries MCP) | user (default) or project |
+| **Cursor** | `.cursor/rules/rgx.mdc` + `"rgx"` in `.cursor/mcp.json` | project only |
+| **VS Code (Copilot)** | `"rgx"` in `.vscode/mcp.json` + block in `.github/copilot-instructions.md` | project (default) or user |
 
-```jsonc
-// Cursor (~/.cursor/mcp.json or .cursor/mcp.json), Windsurf, and most MCP clients:
-{ "mcpServers": { "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } } }
-```
-
-```toml
-# Codex — if you prefer editing ~/.codex/config.toml over `codex mcp add`:
-[mcp_servers.rgx]
-command = "rgx"
-args = ["--agent", "mcp"]
-```
+Scope defaults to user-global for tools that support it, so a personal preference doesn't land in a
+teammate's repo; pass `--project` to commit it, or `--user` to keep Cursor/VS Code out of the tree.
+For an agent not listed, `rgx --agent skill` prints the raw markdown and the MCP config is just
+`{ "mcpServers": { "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } } }` (VS Code uses the key
+`"servers"` instead of `"mcpServers"`).
 
 ### Token savings (`--compact`)
 

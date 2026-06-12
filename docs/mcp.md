@@ -9,38 +9,41 @@ binary installed** — just `rgx`.
 
 ## Setup
 
-Register `rgx --agent mcp` as a stdio MCP server with your agent (recommended setup per agent):
+One command installs the rgx bundle (skill + MCP wiring) for each agent:
 
 ```sh
-claude mcp add rgx -- rgx --agent mcp                                              # Claude Code
-codex mcp add rgx -- rgx --agent mcp                                               # Codex
-gemini mcp add rgx -- rgx --agent mcp                                              # Gemini CLI
-code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'           # VS Code (Copilot)
+rgx --agent install            # auto-detect installed agents; or name: claude codex cursor gemini vscode
+rgx --agent install gemini     # install for one agent (repeatable; --user or --project to pick scope)
+rgx --agent list               # detected agents + install status
+rgx --agent uninstall          # remove exactly what install wrote
 ```
+
+`install` writes only where rgx owns the namespace, and edits shared files idempotently — never a
+blind append (see [Bundles](#bundles)). MCP registration that belongs to a host's own CLI is printed
+for you to run rather than executed, so nothing about your agent's config changes by surprise.
+
+### Bundles
+
+| Agent | Teach (skill/rules) | MCP | Default scope |
+| --- | --- | --- | --- |
+| **Claude Code** | `…/.claude/skills/rgx/SKILL.md` | prints `claude mcp add rgx -- rgx --agent mcp` | user |
+| **Codex** | marked block in `…/.codex/AGENTS.md` | prints `codex mcp add rgx -- rgx --agent mcp` | user |
+| **Gemini CLI** | `…/.gemini/extensions/rgx/GEMINI.md` | bundled in `gemini-extension.json` | user |
+| **Cursor** | `.cursor/rules/rgx.mdc` (with frontmatter) | `"rgx"` in `.cursor/mcp.json` (`mcpServers`) | project |
+| **VS Code** | block in `.github/copilot-instructions.md` | `"rgx"` in `.vscode/mcp.json` (`servers`) | project |
+
+Scope defaults to user-global where the tool supports it; pass `--project` to commit it into the repo
+or `--user` to keep Cursor/VS Code out of the tree (Cursor is project-only — it has no file-based user
+rules). For any other MCP client, register `rgx --agent mcp` as a stdio server by hand:
 
 ```jsonc
-// Cursor (~/.cursor/mcp.json or .cursor/mcp.json), Windsurf, and most MCP clients:
 { "mcpServers": { "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } } }
-```
-
-```toml
-# Codex — if you prefer editing ~/.codex/config.toml over `codex mcp add`:
-[mcp_servers.rgx]
-command = "rgx"
-args = ["--agent", "mcp"]
+// VS Code's .vscode/mcp.json uses "servers" instead of "mcpServers".
 ```
 
 The MCP server keys off the working directory it's launched in, so run it from (or point it at) the
-project root you want searched. The index builds on first use and stays fresh on its own.
-
-Optionally add the **skill** so the agent is taught to prefer `rgx` over `rg`/`grep`/`find`/`fd`:
-
-```sh
-rgx --agent install   # writes ~/.claude/skills/rgx/SKILL.md (override dir via $RGX_SKILL_DIR) + prints MCP setup
-rgx --agent skill     # just print the skill markdown (paste into Codex AGENTS.md or any agent's instructions)
-```
-
-The skill text is version-controlled in [`assets/skill.md`](../assets/skill.md).
+project root you want searched. The index builds on first use and stays fresh on its own. The skill
+text is version-controlled in [`assets/skill.md`](../assets/skill.md).
 
 ## Tools
 

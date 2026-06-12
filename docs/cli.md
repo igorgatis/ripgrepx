@@ -84,15 +84,16 @@ the indexing itself.
 | --- | --- |
 | `rgx --agent mcp` | Serve search to AI agents over MCP (stdio): `content_search`, `file_search`, `status`. |
 | `rgx --agent skill` | Print the agent skill markdown (teaches a model to prefer `rgx` over rg/grep/find/fd). |
-| `rgx --agent install` | Write the skill to `~/.claude/skills/rgx/SKILL.md` (or `$RGX_SKILL_DIR`) and print MCP setup. |
-| `rgx --agent --help` | The agent subcommands plus MCP setup for Claude Code, Codex, and other clients. |
+| `rgx --agent install [TARGET...]` | Install the rgx bundle for each named agent (or auto-detect). `--user`/`--project` pick scope. |
+| `rgx --agent uninstall [TARGET...]` | Remove exactly what `install` wrote. |
+| `rgx --agent list` | Show detected agents and install status. |
+| `rgx --agent --help` | The agent subcommands and the install model. |
 
-Works with **Claude Code**, **Codex**, and any MCP client. Register `rgx --agent mcp` as a stdio
-server: `claude mcp add rgx -- rgx --agent mcp` for Claude Code, a `[mcp_servers.rgx]` block in
-`~/.codex/config.toml` for Codex, or the equivalent `"rgx": { "command": "rgx", "args": ["--agent",
-"mcp"] }` entry in any other client's config. The skill is plain markdown: Claude Code loads it from
-`~/.claude/skills/`, while for Codex or others you paste it into `AGENTS.md` or the agent's
-instructions. See [`mcp.md`](mcp.md).
+`TARGET` is one of `claude`, `codex`, `cursor`, `gemini`, `vscode`. `install` writes only where rgx
+owns the namespace (Claude skill dir, Gemini extension) and edits shared files idempotently — a
+removable marked block, or a merged `"rgx"` key — never a blind append; `uninstall` reverses it. MCP
+registration via a host's own CLI (`claude`/`codex mcp add`) is printed for you to run, not executed.
+See [`mcp.md`](mcp.md) for the per-agent bundle table.
 
 ### Searching for a literal that looks like a flag
 

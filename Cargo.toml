@@ -47,6 +47,7 @@ tcp-transport = []
 [dev-dependencies]
 regex = "1"
 criterion = "0.5"
+tempfile = "3"
 
 [lib]
 name = "rgx"
