@@ -44,6 +44,9 @@ pub(crate) fn pack_opts(o: &SearchOptions) -> u8 {
         | ((o.dot_matches_new_line as u8) << 2)
         | ((o.word as u8) << 3)
         | ((o.fixed_strings as u8) << 4)
+        | ((o.invert as u8) << 5)
+        | ((o.hidden as u8) << 6)
+        | ((o.no_ignore as u8) << 7)
 }
 
 pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
@@ -53,6 +56,9 @@ pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
         dot_matches_new_line: b & 4 != 0,
         word: b & 8 != 0,
         fixed_strings: b & 16 != 0,
+        invert: b & 32 != 0,
+        hidden: b & 64 != 0,
+        no_ignore: b & 128 != 0,
         before_context: before as usize,
         after_context: after as usize,
     }

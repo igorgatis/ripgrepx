@@ -384,25 +384,51 @@ fn read_u64(r: &mut impl Read) -> std::io::Result<u64> {
 /// fallback go through here so they can't drift from `rg` — or from each other. See
 /// `docs/indexing.md` (What the walk includes).
 pub fn walk_builder(root: &Path) -> WalkBuilder {
+    walk_builder_for(root, false, false)
+}
+
+/// `walk_builder` with ripgrep's `--hidden` / `--no-ignore` toggles. `hidden` also descends into
+/// hidden files/dirs; `no_ignore` disables every ignore source (`.gitignore`/`.ignore`/`.rgignore`/
+/// global/excludes/parents), matching `rg --no-ignore`. The index always builds with both `false`
+/// (the default set); these are only for the `full_scan` fallback those flags force.
+pub fn walk_builder_for(root: &Path, hidden: bool, no_ignore: bool) -> WalkBuilder {
     let mut b = WalkBuilder::new(root);
-    b.add_custom_ignore_filename(".rgignore");
+    if no_ignore {
+        b.ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .parents(false);
+    } else {
+        b.add_custom_ignore_filename(".rgignore");
+    }
+    if hidden {
+        b.hidden(false);
+    }
     b
 }
 
 /// Collect the files ripgrep would search under `root`, sorted so file IDs are deterministic.
 pub fn walk_files(root: &Path) -> Vec<PathBuf> {
+    walk_files_for(root, false, false)
+}
+
+/// [`walk_files`] with the `--hidden` / `--no-ignore` toggles (see [`walk_builder_for`]).
+pub fn walk_files_for(root: &Path, hidden: bool, no_ignore: bool) -> Vec<PathBuf> {
     let found = Mutex::new(Vec::<PathBuf>::new());
-    walk_builder(root).build_parallel().run(|| {
-        let found = &found;
-        Box::new(move |res| {
-            if let Ok(entry) = res
-                && entry.file_type().is_some_and(|t| t.is_file())
-            {
-                found.lock().unwrap().push(entry.into_path());
-            }
-            WalkState::Continue
-        })
-    });
+    walk_builder_for(root, hidden, no_ignore)
+        .build_parallel()
+        .run(|| {
+            let found = &found;
+            Box::new(move |res| {
+                if let Ok(entry) = res
+                    && entry.file_type().is_some_and(|t| t.is_file())
+                {
+                    found.lock().unwrap().push(entry.into_path());
+                }
+                WalkState::Continue
+            })
+        });
     let mut paths = found.into_inner().unwrap();
     paths.sort();
     paths

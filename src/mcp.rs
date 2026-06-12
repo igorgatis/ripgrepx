@@ -125,6 +125,9 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                         word: arg_bool(args, "word"),
                         fixed_strings: arg_bool(args, "fixed_strings"),
                         multi_line: arg_bool(args, "multi_line"),
+                        invert: arg_bool(args, "invert_match"),
+                        hidden: arg_bool(args, "hidden"),
+                        no_ignore: arg_bool(args, "no_ignore"),
                         ..Default::default()
                     },
                     mode: if arg_bool(args, "count") {
@@ -307,6 +310,9 @@ fn tools() -> Value {
                     "word": {"type": "boolean", "description": "match only whole words (-w)"},
                     "fixed_strings": {"type": "boolean", "description": "treat pattern as a literal (-F)"},
                     "multi_line": {"type": "boolean"},
+                    "invert_match": {"type": "boolean", "description": "return non-matching lines (-v)"},
+                    "hidden": {"type": "boolean", "description": "also search hidden files/dirs (--hidden)"},
+                    "no_ignore": {"type": "boolean", "description": "ignore .gitignore/.ignore rules (--no-ignore)"},
                     "files_only": {"type": "boolean", "description": "list matching file paths only (-l)"},
                     "count": {"type": "boolean", "description": "per-file match counts only (-c)"},
                     "page_size": {"type": "integer", "description": "matches (or files, for -l/-c) per page; default 50"},

@@ -10,7 +10,7 @@ mod common;
 use std::fs;
 use std::path::Path;
 
-use rgx::index::walk_files;
+use rgx::index::walk_files_for;
 
 const DIRS: &[&str] = &["a", "b", "src", "sub", "build", "pkg"];
 const STEMS: &[&str] = &["foo", "bar", "baz", "main", "mod"];
@@ -96,7 +96,11 @@ fn gen_tree(rng: &mut Rng, root: &Path) -> String {
 }
 
 fn ours(root: &Path) -> Vec<String> {
-    let mut v: Vec<String> = walk_files(root)
+    ours_for(root, false, false)
+}
+
+fn ours_for(root: &Path, hidden: bool, no_ignore: bool) -> Vec<String> {
+    let mut v: Vec<String> = walk_files_for(root, hidden, no_ignore)
         .iter()
         .map(|p| {
             p.strip_prefix(root)
@@ -125,6 +129,43 @@ fn walk_matches_rg_on_random_trees() {
         assert_eq!(
             ours, theirs,
             "seed {seed}: rgx walk != `rg --files`\n--- tree ---\n{desc}--- rgx ---\n{ours:#?}\n--- rg ---\n{theirs:#?}"
+        );
+    }
+}
+
+#[test]
+fn hidden_and_no_ignore_match_rg() {
+    if common::rg().is_none() {
+        eprintln!("rg not on PATH; skipping --hidden/--no-ignore parity");
+        return;
+    }
+    // A tree mixing visible, hidden, and ignored files (`.ignore`, so no `.git` complication), at the
+    // root and in a subdir. rgx's configured walk must match `rg --files` for every flag combo.
+    let td = tempfile::tempdir().unwrap();
+    let r = td.path();
+    write(r, "visible.txt", "x\n");
+    write(r, "sub/visible2.rs", "x\n");
+    write(r, ".hidden.txt", "x\n");
+    write(r, "sub/.hidden2.rs", "x\n");
+    write(r, "skip.log", "x\n");
+    write(r, "sub/skip2.log", "x\n");
+    write(r, ".ignore", "*.log\n");
+
+    for &(hidden, no_ignore) in &[(false, false), (true, false), (false, true), (true, true)] {
+        let mut extra: Vec<&str> = Vec::new();
+        if hidden {
+            extra.push("--hidden");
+        }
+        if no_ignore {
+            extra.push("--no-ignore");
+        }
+        let ours = ours_for(r, hidden, no_ignore);
+        let theirs = common::rg_files_with(r, &extra);
+        assert_eq!(
+            ours,
+            theirs,
+            "hidden={hidden} no_ignore={no_ignore}: rgx walk != `rg --files {}`\n--- rgx ---\n{ours:#?}\n--- rg ---\n{theirs:#?}",
+            extra.join(" ")
         );
     }
 }

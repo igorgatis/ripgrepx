@@ -52,6 +52,12 @@ code path — ripgrep confirms over whatever `candidates()` returns. The CLI sho
 straight to an in-process pipelined scan (below) rather than the daemon, since the index can't narrow
 it.
 
+Three flags force this fallback even for a trigram-accelerable pattern, because the index can't serve
+them: `-v`/`--invert-match` wants the lines that *don't* match (every file is a candidate, and the
+searcher emits the complement), and `--hidden`/`--no-ignore` want files the index never indexed (the
+fallback walk is rebuilt with those toggles — see [`indexing.md`](indexing.md)). Output stays
+byte-for-byte `rg`'s; only the index speedup is forgone.
+
 ## The confirm step
 
 `src/confirm.rs`

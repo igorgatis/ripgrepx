@@ -3,8 +3,9 @@
 //! name lookup. See `docs/cli.md`.
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
-//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -A/-B/-C, `--`, and
-//! `--sort`/`--sortr`); `--weights` is rgx's own (feeds `--sort=weight`).
+//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -A/-B/-C,
+//! --hidden, --no-ignore, `--`, and `--sort`/`--sortr`); `--weights` is rgx's own (feeds
+//! `--sort=weight`).
 
 use std::io::Write;
 use std::path::Path;
@@ -63,7 +64,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -A<n> -B<n> -C<n> --sort=KEY --sortr=KEY --weights=W --\n\
+         flags: -i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore --sort=KEY --sortr=KEY --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -82,8 +83,8 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --version                                    print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -n -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
-first token. Examples:
+(anywhere, like rg): -i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore --. rgx's own modes
+are recognized only as the first token. Examples:
     rgx 'fn \\w+_total' src/        rgx -i needle        rgx -- --server   (literal flag)
 
 ORDER results like `rg --sort` — `--sort=KEY` (asc) / `--sortr=KEY` (desc), KEY = path | modified |
@@ -432,6 +433,9 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
             "-w" | "--word-regexp" => opts.word = true,
             "-F" | "--fixed-strings" => opts.fixed_strings = true,
             "-U" | "--multiline" => opts.multi_line = true,
+            "-v" | "--invert-match" => opts.invert = true,
+            "--hidden" => opts.hidden = true,
+            "--no-ignore" => opts.no_ignore = true,
             "-n" | "--line-number" => {}
             "-l" | "--files-with-matches" if compact => mode = Mode::Files,
             "-c" | "--count" if compact => mode = Mode::Count,
@@ -844,6 +848,14 @@ mod tests {
         assert!(p.opts.case_insensitive && p.opts.word);
         assert!(p.cursor.is_none());
         assert_eq!(p.positionals, vec!["needle", "src/"]);
+    }
+
+    #[test]
+    fn parses_invert_hidden_no_ignore() {
+        let args = argv(&["-v", "--hidden", "--no-ignore", "needle"]);
+        let p = parse_search(&args, false).unwrap();
+        assert!(p.opts.invert && p.opts.hidden && p.opts.no_ignore);
+        assert_eq!(p.positionals, vec!["needle"]);
     }
 
     #[test]

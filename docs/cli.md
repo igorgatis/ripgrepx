@@ -10,17 +10,23 @@ faster.
 rgx <pattern> [rg flags...]
 ```
 
-- The positional is the pattern; all ripgrep flags are accepted and behave identically.
+- The positional is the pattern; the supported ripgrep flags (see [the flag surface](#the-flag-surface))
+  are accepted and behave identically.
 - The index picks candidate files, ripgrep confirms — output is byte-for-byte `rg`'s
   `path:line:text`.
 - Patterns the index can't accelerate fall back to a normal scan transparently.
 
 ```sh
-rgx TODO -t rust
 rgx 'fn \w+_total' src/
 rgx -i needle
+rgx -v TODO                       # lines that do NOT match (-v / --invert-match)
+rgx --hidden --no-ignore secret   # also search hidden + ignored files
 rgx --sortr=modified TODO src/    # newest-changed files first (like rg --sortr)
 ```
+
+`-v`, `--hidden`, and `--no-ignore` ask for results the trigram index can't serve — non-matching
+lines, or files the index never indexed — so they transparently fall back to an in-process scan (the
+same engine, just no index narrowing). Output stays byte-for-byte `rg`'s.
 
 ### Ordering — `--sort` / `--sortr`
 
@@ -43,9 +49,10 @@ rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>
 
 rgx adds exactly **four** modes, recognized only as the **leading token** (any other position goes
 straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and `--agent` gate the
-daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. Beyond the modes, rgx
-recognizes ripgrep's `--sort`/`--sortr` (anywhere, like the other flags) and its own `--weights` (for
-`--sort=weight`); see [Ordering](#ordering--sort--sortr).
+daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. The ripgrep flags rgx
+passes through (anywhere, like rg): `-i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore`,
+plus ripgrep's `--sort`/`--sortr` and rgx's own `--weights` (for `--sort=weight`; see
+[Ordering](#ordering--sort--sortr)).
 
 ### Search modes
 

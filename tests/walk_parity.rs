@@ -17,7 +17,7 @@
 use std::fs;
 use std::path::Path;
 
-use rgx::index::walk_files;
+use rgx::index::{walk_files, walk_files_for};
 
 fn write(root: &Path, rel: &str, content: &str) {
     let p = root.join(rel);
@@ -91,6 +91,48 @@ fn hidden_files_are_skipped() {
     write(r, "visible.txt", "x");
     write(r, ".hidden.txt", "x");
     assert_eq!(walked(r), vec!["visible.txt"]);
+}
+
+/// Files rgx walks with the `--hidden`/`--no-ignore` toggles, sorted relative paths.
+fn walked_for(root: &Path, hidden: bool, no_ignore: bool) -> Vec<String> {
+    let mut v: Vec<String> = walk_files_for(root, hidden, no_ignore)
+        .iter()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn hidden_flag_includes_dotfiles() {
+    let td = tempfile::tempdir().unwrap();
+    let r = td.path();
+    write(r, "visible.txt", "x");
+    write(r, ".hidden.txt", "x");
+    // Default skips the dotfile; `--hidden` includes it (the rest of the walk is unchanged).
+    assert_eq!(walked_for(r, false, false), vec!["visible.txt"]);
+    assert_eq!(
+        walked_for(r, true, false),
+        vec![".hidden.txt", "visible.txt"]
+    );
+}
+
+#[test]
+fn no_ignore_flag_includes_ignored_files() {
+    let td = tempfile::tempdir().unwrap();
+    let r = td.path();
+    write(r, "keep.txt", "x");
+    write(r, "skip.log", "x");
+    write(r, ".ignore", "*.log\n"); // `.ignore` applies without a `.git` dir
+    // Default honors `.ignore`; `--no-ignore` re-includes the ignored file. The `.ignore` dotfile
+    // stays hidden in both (no `--hidden`).
+    assert_eq!(walked_for(r, false, false), vec!["keep.txt"]);
+    assert_eq!(walked_for(r, false, true), vec!["keep.txt", "skip.log"]);
 }
 
 #[test]

@@ -58,7 +58,13 @@ fn query_options(opts: SearchOptions) -> QueryOptions {
 /// this to scan such queries in-process — one process streamed straight to stdout, like ripgrep —
 /// instead of paying the daemon round-trip to ship a potentially huge result set back.
 pub fn is_fallback(pattern: &str, opts: SearchOptions) -> bool {
-    Query::for_pattern(&effective_pattern(pattern, opts), query_options(opts)).is_fallback()
+    // `-v` wants the lines that DON'T match (so every file is a candidate, not just the trigram
+    // hits), and `--hidden`/`--no-ignore` want files the index never indexed. None can be served from
+    // the trigram index, so they scan the tree in-process with the adjusted walk/searcher.
+    opts.invert
+        || opts.hidden
+        || opts.no_ignore
+        || Query::for_pattern(&effective_pattern(pattern, opts), query_options(opts)).is_fallback()
 }
 
 /// Resolve the candidate files for `pattern` as owned paths, so a caller holding the index lock can

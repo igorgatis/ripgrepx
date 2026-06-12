@@ -27,6 +27,12 @@ pub struct SearchOptions {
     pub word: bool,
     /// `-F`: treat the pattern as a literal string.
     pub fixed_strings: bool,
+    /// `-v`: emit non-matching lines instead of matching ones.
+    pub invert: bool,
+    /// `--hidden`: also search hidden files/dirs (default skips them).
+    pub hidden: bool,
+    /// `--no-ignore`: don't honor `.gitignore`/`.ignore`/`.rgignore`/excludes.
+    pub no_ignore: bool,
     /// `-B` / `-C`: lines of leading context.
     pub before_context: usize,
     /// `-A` / `-C`: lines of trailing context.
@@ -51,6 +57,7 @@ fn build_searcher(opts: SearchOptions) -> Searcher {
         .line_number(true)
         .binary_detection(BinaryDetection::quit(0))
         .multi_line(opts.multi_line)
+        .invert_match(opts.invert)
         .before_context(opts.before_context)
         .after_context(opts.after_context)
         .build()
@@ -122,27 +129,30 @@ pub fn full_scan(
     let matcher = build_matcher(pattern, opts)?;
     let matcher = &matcher;
     let sink = &sink;
-    crate::index::walk_builder(root).build_parallel().run(|| {
-        // Build the searcher and printer once per walk thread (not per file): for a match-everything
-        // query over tens of thousands of files, per-file printer construction dominates otherwise.
-        let mut searcher = build_searcher(opts);
-        let mut printer = StandardBuilder::new().build(NoColor::new(Vec::<u8>::new()));
-        Box::new(move |res| {
-            if let Ok(entry) = res
-                && entry.file_type().is_some_and(|t| t.is_file())
-            {
-                let path = entry.path();
-                let shown = display_path(path, root);
-                let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
-                let buf = printer.get_mut().get_mut();
-                if !buf.is_empty() {
-                    sink(buf);
-                    buf.clear();
+    crate::index::walk_builder_for(root, opts.hidden, opts.no_ignore)
+        .build_parallel()
+        .run(|| {
+            // Build the searcher and printer once per walk thread (not per file): for a match-everything
+            // query over tens of thousands of files, per-file printer construction dominates otherwise.
+            let mut searcher = build_searcher(opts);
+            let mut printer = StandardBuilder::new().build(NoColor::new(Vec::<u8>::new()));
+            Box::new(move |res| {
+                if let Ok(entry) = res
+                    && entry.file_type().is_some_and(|t| t.is_file())
+                {
+                    let path = entry.path();
+                    let shown = display_path(path, root);
+                    let _ =
+                        searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
+                    let buf = printer.get_mut().get_mut();
+                    if !buf.is_empty() {
+                        sink(buf);
+                        buf.clear();
+                    }
                 }
-            }
-            WalkState::Continue
-        })
-    });
+                WalkState::Continue
+            })
+        });
     Ok(())
 }
 
@@ -179,6 +189,27 @@ mod tests {
             !text.contains(tmp.to_str().unwrap()),
             "path should be relative: {text:?}"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn invert_emits_non_matching_lines() {
+        let tmp = std::env::temp_dir().join(format!("rgx_invert_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = tmp.join("f.txt");
+        std::fs::write(&p, b"alpha\nbeta NEEDLE gamma\ndelta\n").unwrap();
+
+        let opts = SearchOptions {
+            invert: true,
+            ..Default::default()
+        };
+        let out = search("NEEDLE", &[p.as_path()], &tmp, opts).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        // `-v` keeps the lines that do NOT match, dropping the NEEDLE line.
+        assert!(text.contains("f.txt:1:alpha"), "got: {text:?}");
+        assert!(text.contains("f.txt:3:delta"), "got: {text:?}");
+        assert!(!text.contains("NEEDLE"), "got: {text:?}");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

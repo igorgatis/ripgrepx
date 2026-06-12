@@ -27,11 +27,14 @@ rgx <pattern> [path]        # rgx 'fn \w+_total' src/
 rgx -i needle               # -i case-insensitive, -s case-sensitive, -w whole-word
 rgx -F 'literal.string'     # fixed string (no regex); -U multiline
 rgx -C 3 pattern            # context (-A <n> / -B <n> / -C <n>)
+rgx -v pattern              # non-matching lines (-v / --invert-match)
+rgx --hidden --no-ignore p  # also search hidden + ignored files
 rgx --sortr=modified TODO   # order results (like rg --sort); see below
 ```
 
-- Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -A<n> -B<n> -C<n> --` (line
-  numbers always on, so `-n` is a no-op). To search flag-like text: `rgx -- --foo`.
+- Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -v -A<n> -B<n> -C<n>
+  --hidden --no-ignore --` (line numbers always on, so `-n` is a no-op). To search flag-like text:
+  `rgx -- --foo`. (`-v`/`--hidden`/`--no-ignore` scan in-process — same output, just no index speedup.)
 - **Order results** with `--sort=KEY` / `--sortr=KEY` (ripgrep's flags), `KEY` = `path` | `modified` |
   `accessed` | `created` | `weight`. `weight` is a relevance order: add `--weights=label:weight,...`
   and tag regex alternation branches with `<label>` — e.g.

@@ -27,8 +27,14 @@ pub fn rg() -> Option<&'static str> {
 
 /// `rg --files` run with cwd `dir`: the files ripgrep would search, as sorted `/`-separated paths.
 pub fn rg_files(dir: &Path) -> Vec<String> {
+    rg_files_with(dir, &[])
+}
+
+/// `rg --files <extra...>` (e.g. `--hidden`, `--no-ignore`) run with cwd `dir`.
+pub fn rg_files_with(dir: &Path, extra: &[&str]) -> Vec<String> {
     let out = rg_cmd()
         .arg("--files")
+        .args(extra)
         .current_dir(dir)
         .output()
         .expect("run rg --files");
