@@ -175,7 +175,8 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_absolute_cache_dir() {
-        let abs = parse("cache_dir = \"/tmp/c\"").unwrap();
+        let abs_dir = if cfg!(windows) { "C:/tmp/c" } else { "/tmp/c" };
+        let abs = parse(&format!("cache_dir = \"{abs_dir}\"")).unwrap();
         assert!(validate(abs).is_ok());
         let rel = parse("cache_dir = \"rel/c\"").unwrap();
         assert!(validate(rel).is_err());
