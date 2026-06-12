@@ -3,7 +3,7 @@
 //! [`crate::transport`]). Owning that endpoint *is* the single-instance lock — a second daemon that
 //! loses the race exits. The daemon serves immediately: a warm start loads the snapshot and answers
 //! at once; a cold start answers via a full ripgrep scan (the correct fallback) until the first
-//! build finishes. See `docs/indexing.md` and `docs/index-and-storage.md`.
+//! build finishes. See `docs/indexing.md` and `docs/querying.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

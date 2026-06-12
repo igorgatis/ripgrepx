@@ -100,5 +100,5 @@ in a project `.toml` the user edits directly — there is no config-editing CLI.
   `rg`. See the walk-parity notes in [`indexing.md`](indexing.md).
 
 (Storage is settled — an in-RAM trigram index with a versioned on-disk snapshot; see
-[`index-and-storage.md`](index-and-storage.md). It's an implementation detail that doesn't affect the
+[`indexing.md`](indexing.md#storage). It's an implementation detail that doesn't affect the
 model or guarantees above.)

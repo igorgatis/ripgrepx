@@ -119,7 +119,7 @@ rgx -- --server        # everything after -- is positional
     path. `$RGX_CACHE_DIR` overrides it.
   - `persist_threshold_ms` (default `1000`) — persist the index only if the cold build took at least
     this long; below it the index stays RAM-only and is rebuilt on each daemon start. `0` always
-    persists. See [`index-and-storage.md`](index-and-storage.md#7-storage).
+    persists. See [`indexing.md`](indexing.md#storage).
   - `idle_timeout_secs` (default `3600`) — exit the daemon after this long with no search, freeing
     its RAM; the next search respawns it. Zero or negative stays resident forever.
 - The background indexer **starts on first use**, so you rarely need `--server start`/`stop`

@@ -4,7 +4,7 @@
 //! output is byte-for-byte `rg`'s. We deliberately use `BinaryDetection::quit`, which reproduces
 //! ripgrep's *recursive-traversal* binary behavior (search until the first NUL, then stop) — not
 //! the explicit-file-argument behavior the `rg` binary would apply to a candidate list. See
-//! `docs/index-and-storage.md` sections 3.1 and 4.
+//! `docs/querying.md` (the confirm step) and `docs/indexing.md` (binary files).
 
 use std::path::Path;
 

@@ -10,7 +10,7 @@
 //! the suffix literals. Each is an independently necessary condition, so their conjunction is
 //! necessary. For a literal of length >= 3 we require all its trigrams (an AND); across the
 //! alternatives we OR; a literal shorter than 3 (or an unbounded literal set) carries no trigram
-//! constraint, collapsing that side to `All`. See `docs/index-and-storage.md` (section 2.3).
+//! constraint, collapsing that side to `All`. See `docs/querying.md` (the soundness core).
 
 use crate::trigram::{self, Trigram};
 use regex_syntax::ParserBuilder;

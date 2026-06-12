@@ -176,13 +176,13 @@ from each project's own code and commit history), `mean ± σ` over 10 runs:
 The more selective the query, the bigger the win (a rare symbol touches few files; a `func (kl
 *Kubelet)` receiver hits 13 of 30k). rgx is also markedly **more consistent**: its σ stays sub-2 ms
 while a full `rg` scan's swings with cache state (linux `kmalloc`: rg 2308 ± 507 ms vs rgx 57 ± 1 ms).
-The full set (and the fallback rows below) is in [`bench/baseline.txt`](bench/baseline.txt).
+The full set (and the fallback rows below) is in [`benches/baseline.txt`](benches/baseline.txt).
 
 **Honest caveat.** A *fallback* query the index can't narrow — no usable trigram, e.g. `\w+` or a
 2-char pattern — is handled by an in-process pipelined scan and lands at **parity** with `rg`. The one
 exception is a *match-everything* query like `.*` over the largest repo (printing all 1.5 GB), at
 ~**0.8×**: a degenerate "cat the repo", not a search. See
-[`docs/index-and-storage.md`](docs/index-and-storage.md) §8 for why.
+[`docs/querying.md`](docs/querying.md#fallback-throughput-the-one-residual) for why.
 
 ### Methodology
 
@@ -190,7 +190,7 @@ exception is a *match-everything* query like `.*` over the largest repo (printin
   timings via `hyperfine` (1 warmup, 10 runs, reported as mean ± σ), output discarded.
 - `rgx <pattern> <repo>` (CLI talking to its warm daemon) vs `rg -n <pattern> <repo>`; both pipe to
   the same sink, so the comparison is apples-to-apples.
-- Reproduce: `RGX=target/release/rgx bench/bench.sh <repo> <pattern>...` (the script prints the `rg`
+- Reproduce: `RGX=target/release/rgx benches/bench.sh <repo> <pattern>...` (the script prints the `rg`
   version, warms the daemon, benchmarks each pattern, and flags any regression). Numbers vary with
   hardware and cache state.
 
@@ -200,10 +200,12 @@ exception is a *match-everything* query like `.*` over the largest repo (printin
   contract, open questions.
 - [`docs/cli.md`](docs/cli.md) — command surface and the `--server` gate.
 - [`docs/mcp.md`](docs/mcp.md) — the agent-facing MCP tools.
-- [`docs/indexing.md`](docs/indexing.md) — streaming index, freshness, incremental updates.
+- [`docs/indexing.md`](docs/indexing.md) — write path: building, storing, and keeping the trigram
+  index fresh, plus the ripgrep-parity walk.
+- [`docs/querying.md`](docs/querying.md) — read path: regex→trigram query, candidate selection,
+  ripgrep confirm, output/paging, and benchmark results vs `rg`.
 - [`docs/profiling.md`](docs/profiling.md) — how to profile build/query (criterion, samply, dhat).
-- [`docs/index-and-storage.md`](docs/index-and-storage.md) — trigram index design, storage engine
-  choice, and benchmark results vs `rg`.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build/test/lint, conventions, and the release process.
 
 ## License
 

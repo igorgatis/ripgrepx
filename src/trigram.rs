@@ -2,7 +2,7 @@
 //!
 //! A trigram is any three consecutive bytes of a file's contents. A file is represented in the
 //! index by the *set* of distinct trigrams it contains; a query is represented by a boolean
-//! formula over trigrams that every matching file must satisfy. See `docs/index-and-storage.md`.
+//! formula over trigrams that every matching file must satisfy. See `docs/querying.md`.
 
 use std::collections::BTreeSet;
 

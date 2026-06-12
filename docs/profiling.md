@@ -69,6 +69,6 @@ moves the needle, that's a near-free win.
 
 ## Macro A/B vs ripgrep
 
-[`bench/bench.sh`](../bench/bench.sh) is the end-to-end regression guard (warm daemon vs `rg`, mean ±
-σ, records the `rg` version). See [`bench/baseline.txt`](../bench/baseline.txt) and the README
+[`benches/bench.sh`](../benches/bench.sh) is the end-to-end regression guard (warm daemon vs `rg`, mean ±
+σ, records the `rg` version). See [`benches/baseline.txt`](../benches/baseline.txt) and the README
 Benchmarks section.
