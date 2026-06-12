@@ -15,21 +15,26 @@ installed.
 
 ### Install
 
-**1. Get the binary** — a single, self-contained ~4 MB file (ripgrep linked in, no deps). Grab the
-archive for your platform from the [latest release](https://github.com/igorgatis/rgx/releases/latest),
-or download it from the shell:
+**1. Install rgx** — easiest via npm, which fetches the right prebuilt binary:
+
+```sh
+npm install -g ripgrepx        # installs the `rgx` command
+```
+
+Or grab the self-contained ~4 MB binary (ripgrep linked in, no deps) straight from the
+[latest release](https://github.com/igorgatis/ripgrepx/releases/latest):
 
 ```sh
 # macOS / Linux: pick your target, extract, and put rgx on your PATH
 VER=v0.1.0
 TARGET=aarch64-apple-darwin   # or: x86_64-apple-darwin, x86_64-unknown-linux-gnu,
                               #     aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl
-curl -fsSL "https://github.com/igorgatis/rgx/releases/download/$VER/rgx-$VER-$TARGET.tar.gz" \
+curl -fsSL "https://github.com/igorgatis/ripgrepx/releases/download/$VER/rgx-$VER-$TARGET.tar.gz" \
   | tar xz && install -m755 rgx ~/.local/bin/rgx
 ```
 
-On **Windows**, download `rgx-v0.1.0-x86_64-pc-windows-msvc.zip` (or `aarch64-…`) from the release
-and put `rgx.exe` on your `PATH`. `npm install -g rgx` is planned (TODO).
+On **Windows**, `npm install -g ripgrepx`, or download `rgx-v0.1.0-x86_64-pc-windows-msvc.zip`
+(or `aarch64-…`) from the release and put `rgx.exe` on your `PATH`.
 
 **2. Teach your agent** to prefer rgx over rg/grep/find/fd (installs `~/.claude/skills/rgx/SKILL.md`):
 

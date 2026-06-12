@@ -1,10 +1,10 @@
 [package]
-name = "rgx"
+name = "ripgrepx"
 version = "0.1.0"
 edition = "2024"
 description = "Instant ripgrep via a persistent candidate index, for the terminal and AI agents over MCP"
 license = "MIT"
-repository = "https://github.com/igorgatis/rgx"
+repository = "https://github.com/igorgatis/ripgrepx"
 readme = "README.md"
 keywords = ["ripgrep", "grep", "search", "code-search", "mcp"]
 categories = ["command-line-utilities", "development-tools"]

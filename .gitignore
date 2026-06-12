@@ -1,3 +1,7 @@
 /target
 .DS_Store
 .rgx/
+
+# npm: the native binary is fetched by postinstall, never committed
+npm/bin/rgx
+npm/bin/rgx.exe

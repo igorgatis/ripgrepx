@@ -1,0 +1,35 @@
+{
+  "name": "ripgrepx",
+  "version": "0.1.0",
+  "description": "Instant ripgrep via a persistent index — token-frugal code search for AI agents and the terminal. Installs the `rgx` command.",
+  "bin": {
+    "rgx": "bin/rgx.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/rgx.js",
+    "install.js"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igorgatis/ripgrepx.git"
+  },
+  "homepage": "https://github.com/igorgatis/ripgrepx#readme",
+  "bugs": "https://github.com/igorgatis/ripgrepx/issues",
+  "license": "MIT",
+  "keywords": [
+    "ripgrep",
+    "grep",
+    "search",
+    "code-search",
+    "mcp",
+    "cli",
+    "ai",
+    "agent"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
