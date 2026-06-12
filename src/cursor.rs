@@ -12,6 +12,7 @@ use rustc_hash::FxHasher;
 
 use crate::confirm::SearchOptions;
 use crate::proto::{pack_opts, unpack_opts};
+use crate::sort::SortSpec;
 
 const KIND: u8 = 0x01;
 const VERSION: u8 = 0x02;
@@ -29,15 +30,22 @@ pub enum Mode {
 }
 
 /// Everything needed to reproduce a query and resume where the previous page ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Cursor {
     pub mode: Mode,
     pub pattern: String,
     pub opts: SearchOptions,
     pub page_size: usize,
-    /// Keyset position: resume after this `(path, lineno)` (lineno is 0 in files/count modes).
+    /// Keyset position: resume after this `(order, path, lineno)` (lineno is 0 in files/count modes;
+    /// `order` is the sort value — 0 for the default order).
     pub last_path: Option<String>,
     pub last_lineno: u64,
+    pub last_order: i64,
+    /// How the view is ordered (`--sort`/`--sortr`), so the next page reproduces the exact order.
+    pub sort: SortSpec,
+    /// The `--weights` spec for `--sort=weight`, so the next page rebuilds the same ranker. `None`
+    /// otherwise.
+    pub weights: Option<String>,
     /// `total_matches` when the cursor was minted, so a resume can report "N -> M matches".
     pub prev_total: usize,
     /// Low 32 bits of the result-set fingerprint when minted, for (advisory) staleness detection.
@@ -71,8 +79,12 @@ pub fn encode(c: &Cursor) -> Vec<u8> {
     put_varint(&mut b, c.prev_total as u64);
     put_varint(&mut b, c.fingerprint as u64);
     put_varint(&mut b, c.last_lineno);
+    put_varint(&mut b, c.last_order as u64);
+    b.push(c.sort.encode_key());
+    b.push(c.sort.reverse as u8);
     put_opt(&mut b, c.last_path.as_deref());
     put_opt(&mut b, c.root_hint.as_deref());
+    put_opt(&mut b, c.weights.as_deref());
     put_bytes(&mut b, c.pattern.as_bytes());
     b
 }
@@ -99,8 +111,13 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
     let prev_total = take_varint(&mut cur)? as usize;
     let fingerprint = take_varint(&mut cur)? as u32;
     let last_lineno = take_varint(&mut cur)?;
+    let last_order = take_varint(&mut cur)? as i64;
+    let sort_key = take_u8(&mut cur)?;
+    let sort_reverse = take_u8(&mut cur)? != 0;
+    let sort = SortSpec::decode(sort_key, sort_reverse)?;
     let last_path = take_opt(&mut cur)?;
     let root_hint = take_opt(&mut cur)?;
+    let weights = take_opt(&mut cur)?;
     let pattern = String::from_utf8(take_bytes(&mut cur)?)?;
     Ok(Cursor {
         mode,
@@ -109,6 +126,9 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
         page_size,
         last_path,
         last_lineno,
+        last_order,
+        sort,
+        weights,
         prev_total,
         fingerprint,
         root_hint,
@@ -201,6 +221,12 @@ mod tests {
             page_size: 25,
             last_path: Some("src/café.rs".into()),
             last_lineno: 42,
+            last_order: -700_000,
+            sort: crate::sort::SortSpec {
+                key: crate::sort::SortKey::Weight,
+                reverse: false,
+            },
+            weights: Some("w1:0.7,w2:0.3".into()),
             prev_total: 421,
             fingerprint: 0xdead_beef,
             root_hint: Some("src/".into()),

@@ -25,8 +25,10 @@ pub mod pagination;
 pub mod paths;
 pub mod proto;
 pub mod query;
+pub mod rank;
 pub mod server;
 pub mod skill;
+pub mod sort;
 pub mod status;
 pub mod transport;
 pub mod trigram;
@@ -134,6 +136,44 @@ pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result
             },
         )
     }
+}
+
+/// Run a content search and return ripgrep-style `path:line:text` bytes ordered by `sort` (the bare
+/// `--sort`/`--sortr` path). `weights` supplies the `--sort=weight` map (the pattern's `<label>` tags
+/// are stripped before searching, so the match set stays ripgrep's). Files are ordered by the sort
+/// key; lines within a file keep ripgrep's order. `--` context separators are not reconstructed.
+/// Callers must only reach here when `sort` actually reorders (`!sort.is_noop()`); the no-op case
+/// belongs on the streaming path.
+pub fn collect_search_sorted(
+    root: &Path,
+    pattern: &str,
+    opts: SearchOptions,
+    sort: sort::SortSpec,
+    weights: Option<&str>,
+) -> Result<Vec<u8>> {
+    let ranking = rank::parse(pattern, weights, opts)?;
+    let raw = collect_search(root, &ranking.plain, opts)?;
+    let text = String::from_utf8_lossy(&raw);
+    let rows = compact::parse_rows(&text);
+    let order = compact::file_order_map(&rows, sort, ranking.ranker.as_ref(), Some(root));
+    let order_of = |path: &str| order.get(path).copied().unwrap_or(0);
+
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    idx.sort_by(|&a, &b| {
+        sort::cmp(
+            (order_of(rows[a].path), rows[a].path, rows[a].lineno),
+            (order_of(rows[b].path), rows[b].path, rows[b].lineno),
+            sort.reverse,
+        )
+    });
+
+    let mut out = Vec::with_capacity(raw.len());
+    for &i in &idx {
+        let r = &rows[i];
+        let sep = if r.is_match { ':' } else { '-' };
+        out.extend_from_slice(format!("{}{sep}{}{sep}{}\n", r.path, r.lineno, r.text).as_bytes());
+    }
+    Ok(out)
 }
 
 /// Collecting convenience over [`stream_search`] (used in tests).

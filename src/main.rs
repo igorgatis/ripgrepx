@@ -3,7 +3,8 @@
 //! name lookup. See `docs/cli.md`.
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
-//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -A/-B/-C, `--`).
+//! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -A/-B/-C, `--`, and
+//! `--sort`/`--sortr`); `--weights` is rgx's own (feeds `--sort=weight`).
 
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +15,7 @@ use rgx::confirm::SearchOptions;
 use rgx::cursor::{self, Mode};
 use rgx::paths::resolve_root;
 use rgx::proto::Request;
+use rgx::sort::SortSpec;
 use rgx::{client, mcp, server};
 
 // Heap profiling (cargo run --release --features dhat-heap ...): captures allocations for the whole
@@ -61,7 +63,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -A<n> -B<n> -C<n> --\n\
+         flags: -i -s -w -n -F -U -A<n> -B<n> -C<n> --sort=KEY --sortr=KEY --weights=W --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -83,6 +85,11 @@ DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, sam
 (anywhere, like rg): -i -s -w -n -F -U -A<n> -B<n> -C<n> --. rgx's own modes are recognized only as the
 first token. Examples:
     rgx 'fn \\w+_total' src/        rgx -i needle        rgx -- --server   (literal flag)
+
+ORDER results like `rg --sort` — `--sort=KEY` (asc) / `--sortr=KEY` (desc), KEY = path | modified |
+accessed | created (file metadata) | weight (relevance). For weight, declare branch weights with
+`--weights=label:weight,...` and tag regex branches in the pattern with <label>:
+    rgx --sortr=modified TODO src/     rgx --sort=weight --weights=a:0.9,b:0.1 '(foo<a>|bar<b>)'
 
 SERVER — the indexer starts on first use and stays fresh on its own; subcommands act on the cwd's
 project. `status` reports readiness/counts/age, `watch` repaints live. Index + socket live under
@@ -392,6 +399,8 @@ struct ParsedSearch<'a> {
     opts: SearchOptions,
     cursor: Option<&'a str>,
     page_size: Option<usize>,
+    sort: SortSpec,
+    weights: Option<&'a str>,
     mode: Mode,
     positionals: Vec<&'a str>,
 }
@@ -401,6 +410,8 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
     let mut positionals: Vec<&str> = Vec::new();
     let mut cursor: Option<&str> = None;
     let mut page_size: Option<usize> = None;
+    let mut sort = SortSpec::default();
+    let mut weights: Option<&str> = None;
     let mut mode = Mode::Matches;
     let mut only_positional = false; // set by `--`
     let mut i = 0;
@@ -444,6 +455,25 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
                 i += consumed;
                 continue;
             }
+            p if p == "--sort" || p.starts_with("--sort=") => {
+                sort = parse_sort_flag(args, i, "--sort", false)?;
+                i += long_value(args, i, "--sort").map_or(1, |(_, c)| c);
+                continue;
+            }
+            p if p == "--sortr" || p.starts_with("--sortr=") => {
+                sort = parse_sort_flag(args, i, "--sortr", true)?;
+                i += long_value(args, i, "--sortr").map_or(1, |(_, c)| c);
+                continue;
+            }
+            p if p == "--weights" || p.starts_with("--weights=") => {
+                let Some((v, consumed)) = long_value(args, i, "--weights") else {
+                    eprintln!("rgx: --weights needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                weights = Some(v);
+                i += consumed;
+                continue;
+            }
             ctx if ctx.starts_with("-A") || ctx.starts_with("-B") || ctx.starts_with("-C") => {
                 let (n, consumed) = match context_value(args, i) {
                     Some(v) => v,
@@ -474,9 +504,41 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
         opts,
         cursor,
         page_size,
+        sort,
+        weights,
         mode,
         positionals,
     })
+}
+
+/// Parse a `--sort`/`--sortr` flag value into a [`SortSpec`], reporting a usage error as an exit code.
+fn parse_sort_flag(
+    args: &[String],
+    i: usize,
+    name: &str,
+    reverse: bool,
+) -> Result<SortSpec, ExitCode> {
+    let Some((v, _)) = long_value(args, i, name) else {
+        eprintln!("rgx: {name} needs a value (none|path|modified|accessed|created|weight)");
+        return Err(ExitCode::from(2));
+    };
+    rgx::sort::parse(v, reverse).map_err(|e| {
+        eprintln!("rgx: {e}");
+        ExitCode::from(2)
+    })
+}
+
+/// Validate the `--sort`/`--weights` pairing: `weight` needs weights, and weights apply only to it.
+fn check_sort(sort: SortSpec, weights: Option<&str>) -> Result<(), ExitCode> {
+    if sort.needs_weights() && weights.is_none() {
+        eprintln!("rgx: --sort=weight needs --weights=label:weight,...");
+        return Err(ExitCode::from(2));
+    }
+    if !sort.needs_weights() && weights.is_some() {
+        eprintln!("rgx: --weights applies only to --sort=weight");
+        return Err(ExitCode::from(2));
+    }
+    Ok(())
 }
 
 fn content_cmd(args: &[String]) -> ExitCode {
@@ -497,6 +559,40 @@ fn content_cmd(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let root = resolve_root(path);
+
+    // Validate the sort/weights pairing before dispatch — unconditionally, so `--weights` without
+    // `--sort=weight` is rejected here too. Otherwise it would slip past the no-op guard below and the
+    // annotated pattern (`<label>` tags) would reach the plain streaming search verbatim, changing the
+    // match set.
+    if let Err(code) = check_sort(parsed.sort, parsed.weights) {
+        return code;
+    }
+
+    // `--sort`/`--sortr`: reorder results, the way `rg --sort` does. Reordering requires seeing the
+    // whole result set, so it leaves the streaming fast path and buffers (still single command, no
+    // `rg` binary). Absence of `--sort` keeps today's byte-for-byte streaming below.
+    if !parsed.sort.is_noop() {
+        return match rgx::collect_search_sorted(&root, &pattern, opts, parsed.sort, parsed.weights)
+        {
+            Ok(bytes) => {
+                match std::io::stdout().write_all(&bytes) {
+                    Ok(()) if bytes.is_empty() => ExitCode::from(1),
+                    Ok(()) => ExitCode::SUCCESS,
+                    // `rgx --sortr=modified | head`: a closed pipe is a clean exit.
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+                    Err(e) => {
+                        eprintln!("rgx: {e}");
+                        ExitCode::from(2)
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("rgx: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
     let mut stdout = std::io::stdout();
 
     // Fallback queries (no usable trigram) make every file a candidate, so the daemon can't narrow
@@ -556,12 +652,23 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     // Resume from the cursor (which carries the whole query) when given, else build a fresh query
     // from the flags + positionals. `prev` is the (total, fingerprint) at mint time, for the
     // staleness check below.
-    let (pattern, opts, mode, start_after, page_size, root_hint, prev) = if let Some(tok) =
-        parsed.cursor
-    {
+    #[allow(clippy::type_complexity)]
+    let (pattern, opts, mode, start_after, page_size, root_hint, sort, weights, prev): (
+        String,
+        SearchOptions,
+        Mode,
+        Option<(i64, String, u64)>,
+        usize,
+        Option<String>,
+        SortSpec,
+        Option<String>,
+        Option<(usize, u32)>,
+    ) = if let Some(tok) = parsed.cursor {
         // The cursor is self-contained, so any co-supplied query flag would be silently dropped.
         // Reject the combination explicitly rather than ignoring the flag.
         let stray_flags = parsed.page_size.is_some()
+            || !parsed.sort.is_noop()
+            || parsed.weights.is_some()
             || parsed.mode != Mode::Matches
             || parsed.opts != SearchOptions::default();
         if !parsed.positionals.is_empty() || stray_flags {
@@ -586,7 +693,10 @@ fn compact_cmd(args: &[String]) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        let start_after = c.last_path.clone().map(|p| (p, c.last_lineno));
+        let start_after = c
+            .last_path
+            .clone()
+            .map(|p| (c.last_order, p, c.last_lineno));
         (
             c.pattern,
             c.opts,
@@ -594,6 +704,8 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             start_after,
             c.page_size,
             c.root_hint,
+            c.sort,
+            c.weights,
             Some((c.prev_total, c.fingerprint)),
         )
     } else {
@@ -605,6 +717,9 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             eprintln!("rgx: unexpected extra argument {:?}", rest[1]);
             return ExitCode::from(2);
         }
+        if let Err(code) = check_sort(parsed.sort, parsed.weights) {
+            return code;
+        }
         (
             pattern.to_string(),
             parsed.opts,
@@ -612,12 +727,24 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             None,
             parsed.page_size.unwrap_or(compact::DEFAULT_PAGE_SIZE),
             rest.first().map(|s| s.to_string()),
+            parsed.sort,
+            parsed.weights.map(str::to_string),
             None,
         )
     };
 
+    // `--sort=weight`: strip `<label>` annotations to get the plain pattern that is actually searched
+    // (so the match set stays ripgrep's), and build a ranker. For every other key `weights` is None,
+    // so the pattern passes through unchanged and there is no ranker.
+    let ranking = match rgx::rank::parse(&pattern, weights.as_deref(), opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("rgx: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let root = resolve_root(root_hint.as_deref());
-    let raw = match rgx::collect_search(&root, &pattern, opts) {
+    let raw = match rgx::collect_search(&root, &ranking.plain, opts) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("rgx: {e}");
@@ -626,13 +753,16 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     };
     let page = compact::format(
         &raw,
-        &pattern,
+        &ranking.plain,
         opts,
         CompactOpts {
             mode,
             start_after,
             page_size,
             max_cols: compact::DEFAULT_MAX_COLS,
+            sort,
+            ranker: ranking.ranker,
+            root: Some(root.clone()),
         },
     );
 
@@ -646,7 +776,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     // resolved absolute root: the caller pages from the same directory, so it re-resolves the same
     // tree. `root_hint` is already that scope from the branches above. Park the blob in the cwd daemon
     // and print its short token.
-    if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint) {
+    if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint, sort, weights) {
         match rgx::client::store_cursor(&cwd, cursor::encode(&next)) {
             Ok(token) => {
                 let _ = writeln!(out, "next: rgx --compact --cursor {}", shell_quote(&token));

@@ -95,6 +95,54 @@ between pages is flagged with a `note:` line. The daemon parks the cursor for ~2
 back a short id in its place (single-use); an expired one returns `pagination expired — re-run the
 search`. The user- and agent-facing surfaces are in [`cli.md`](cli.md) and [`mcp.md`](mcp.md).
 
+## Ordering (`--sort` / `--sortr`)
+
+`src/sort.rs`
+
+`--sort=KEY` (ascending) and `--sortr=KEY` (descending) *reorder* results without changing the match
+set — ripgrep's own flags and vocabulary, with one rgx extension:
+
+| Key | Order value | Where it comes from |
+| --- | --- | --- |
+| `path` | the path | `Path::cmp` (rg's lexical file order) |
+| `modified` / `accessed` / `created` | file time (ns) | `stat`, like `rg --sort` |
+| `weight` | `-(score · 1e6)` | weighted match (`--weights`), best-first |
+| `none` (default) | — | don't reorder |
+
+All keys are **file-level**: a per-file order value (a single `i64`) decides the order files appear in;
+lines within a file keep ripgrep's order, and `--sortr` reverses only the file order (matching rg).
+The order is a deterministic total order — `(order_value, path, lineno)` — so the keyset cursor stays
+stable across pages. Ordering works on the **bare** output (buffered like `rg --sort`, which also drops
+to single-threaded to sort) and in the `--compact`/MCP view; absence of `--sort` keeps the streaming,
+historical-order path untouched. rgx orders files exactly as `rg --sort` does; the line format is
+rgx's usual one (always-on line numbers, root-relative paths).
+
+### Weighted match (`--sort=weight --weights=…`)
+
+`src/rank.rs`
+
+The `weight` key is a **model-supplied** relevance signal. Declare named weights and tag regex
+alternation branches with `<label>`:
+
+```sh
+rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
+```
+
+The `<label>` tags are **stripped** to form the plain pattern ripgrep actually searches
+(`fn (process|process\()`), so the match set is exactly `rg`'s. In parallel, rgx builds a
+capture-instrumented copy of the regex — each labeled branch wrapped in a named capture group — and,
+for each matching line, reads which branch participated to get its weight. A file's score is the
+**max** weight over its matched lines (per-file aggregation), and a match attributable to no labeled
+branch scores 0 and **sinks last** — still present and reachable, just deprioritized. `--sort=weight`
+puts highest-weight files first (`--sortr=weight` flips it); `-F` has no branches to weight and is
+rejected.
+
+This is reorder-only *by construction*: scoring runs in the presentation layer over already-confirmed
+matches (which branch matched is the regex engine's call, never ours). If the instrumented regex ever
+misbehaved, the worst case is a worse ordering — never a wrong or missing match. Weighted match can't
+be backtested against transcripts; it's a forward bet that letting the model express intent improves
+page 1.
+
 ## Benchmarks
 
 `rgx` (warm daemon) vs ripgrep 15.1.0 — see [`README.md`](../README.md#benchmarks) for the table and

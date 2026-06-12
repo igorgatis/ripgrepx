@@ -5,13 +5,17 @@
 //! control), but the *presentation* differs: the path is printed once per file, results are paged,
 //! and pathologically long lines are center-truncated on the match (one `Read` from full content).
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use grep::matcher::Matcher;
 
 use crate::confirm::{SearchOptions, build_matcher};
 use crate::cursor::{self, Cursor, Mode};
 use crate::effective_pattern;
+use crate::rank::Ranker;
+use crate::sort::{self, SortKey, SortSpec};
 
 /// Default matches per page. Generous: an agent pulls the next page cheaply (warm index).
 pub const DEFAULT_PAGE_SIZE: usize = 50;
@@ -21,11 +25,19 @@ pub const DEFAULT_MAX_COLS: usize = 200;
 
 pub struct CompactOpts {
     pub mode: Mode,
-    /// Keyset resume position: render only entries strictly after this `(path, lineno)` key (lineno is
-    /// ignored in files/count modes). `None` starts from the beginning.
-    pub start_after: Option<(String, u64)>,
+    /// Keyset resume position: render only entries strictly after this `(order, path, lineno)` key
+    /// (lineno is ignored in files/count modes; `order` is the sort value — 0 for the default order).
+    /// `None` starts from the beginning.
+    pub start_after: Option<(i64, String, u64)>,
     pub page_size: usize,
     pub max_cols: usize,
+    /// How to order files (`--sort`/`--sortr`); `SortKey::None` keeps the default `(path, lineno)`
+    /// order. Reordering only — never changes the match set.
+    pub sort: SortSpec,
+    /// The ranker for `--sort=weight`; `None` for every other key.
+    pub ranker: Option<Ranker>,
+    /// The search root, needed to `stat` files for the `modified`/`accessed`/`created` keys.
+    pub root: Option<PathBuf>,
 }
 
 impl Default for CompactOpts {
@@ -35,8 +47,48 @@ impl Default for CompactOpts {
             start_after: None,
             page_size: DEFAULT_PAGE_SIZE,
             max_cols: DEFAULT_MAX_COLS,
+            sort: SortSpec::default(),
+            ranker: None,
+            root: None,
         }
     }
+}
+
+/// Per-file order value (max weight, file mtime, …) keyed by path. Empty for `path`/`none`, where the
+/// order falls entirely to the path tiebreak in [`sort::cmp`]. Shared by the compact view and the bare
+/// `--sort` path (see `lib::collect_search_sorted`).
+pub(crate) fn file_order_map<'a>(
+    rows: &[Row<'a>],
+    sort: SortSpec,
+    ranker: Option<&Ranker>,
+    root: Option<&std::path::Path>,
+) -> HashMap<&'a str, i64> {
+    let mut m: HashMap<&str, i64> = HashMap::new();
+    match sort.key {
+        SortKey::Weight => {
+            if let Some(ranker) = ranker {
+                let mut score: HashMap<&str, f32> = HashMap::new();
+                for row in rows.iter().filter(|r| r.is_match) {
+                    let e = score.entry(row.path).or_insert(f32::MIN);
+                    *e = e.max(ranker.score(row.text));
+                }
+                return score
+                    .into_iter()
+                    .map(|(p, s)| (p, sort::weight_to_order(s)))
+                    .collect();
+            }
+        }
+        SortKey::Modified | SortKey::Accessed | SortKey::Created => {
+            if let Some(root) = root {
+                for row in rows.iter().filter(|r| r.is_match) {
+                    m.entry(row.path)
+                        .or_insert_with(|| sort::fs_order_value(sort.key, root, row.path));
+                }
+            }
+        }
+        SortKey::Path | SortKey::None => {}
+    }
+    m
 }
 
 /// A rendered page: surface-agnostic `header` + `body`, plus the counts and keyset state each caller
@@ -51,7 +103,7 @@ pub struct Page {
     pub first_index: usize,
     pub last_index: usize,
     /// Keyset key of the last rendered entry, to seed the next cursor; `None` when nothing remains.
-    pub last_key: Option<(String, u64)>,
+    pub last_key: Option<(i64, String, u64)>,
     pub has_more: bool,
     /// Fingerprint of the full result set, for staleness detection across pages.
     pub fingerprint: u64,
@@ -61,6 +113,7 @@ impl Page {
     /// The cursor that fetches the page after this one, or `None` when this is the last page. Both the
     /// CLI and MCP surfaces mint it the same way; `root_hint` is the only per-surface input (the
     /// resolved root for the CLI, `None` for MCP where the server root is authoritative).
+    #[allow(clippy::too_many_arguments)]
     pub fn next_cursor(
         &self,
         mode: Mode,
@@ -68,14 +121,19 @@ impl Page {
         opts: SearchOptions,
         page_size: usize,
         root_hint: Option<String>,
+        sort: SortSpec,
+        weights: Option<String>,
     ) -> Option<Cursor> {
         self.has_more.then(|| Cursor {
             mode,
             pattern,
             opts,
             page_size,
-            last_path: self.last_key.as_ref().map(|(p, _)| p.clone()),
-            last_lineno: self.last_key.as_ref().map_or(0, |(_, l)| *l),
+            last_path: self.last_key.as_ref().map(|(_, p, _)| p.clone()),
+            last_lineno: self.last_key.as_ref().map_or(0, |(_, _, l)| *l),
+            last_order: self.last_key.as_ref().map_or(0, |(o, _, _)| *o),
+            sort,
+            weights,
             prev_total: self.total_matches,
             fingerprint: self.fingerprint as u32,
             root_hint,
@@ -100,11 +158,11 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-struct Row<'a> {
-    path: &'a str,
-    lineno: u64,
-    is_match: bool,
-    text: &'a str,
+pub(crate) struct Row<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) lineno: u64,
+    pub(crate) is_match: bool,
+    pub(crate) text: &'a str,
     /// Block id: a maximal run of consecutive rows with the same path, not crossing a `--` separator.
     block: usize,
 }
@@ -117,7 +175,14 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
     let text = String::from_utf8_lossy(raw);
     let rows = parse_rows(&text);
 
-    // Keyset paging compares match keys as (path-string, lineno), so match_idx MUST be in that exact
+    // Per-file order value (weight, mtime, …) driving the sort; empty for the default order, where
+    // every value is 0 so the ordering below collapses to the historical (path, lineno) order —
+    // byte-identical to before `--sort`.
+    let file_order = file_order_map(&rows, c.sort, c.ranker.as_ref(), c.root.as_deref());
+    let order_of = |path: &str| file_order.get(path).copied().unwrap_or(0);
+    let rev = c.sort.reverse;
+
+    // Keyset paging compares match keys as (order, path, lineno), so match_idx MUST be in that exact
     // order. We cannot trust the input order: collect_search's daemon path emits in index file-id
     // order (fresh-build = `Path::cmp`, which differs from byte-string order at the `/` boundary; and
     // incrementally-added files are appended with the highest id), and the cold-scan path is
@@ -129,22 +194,42 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
         .filter(|(_, r)| r.is_match)
         .map(|(i, _)| i)
         .collect();
-    match_idx.sort_by(|&a, &b| (rows[a].path, rows[a].lineno).cmp(&(rows[b].path, rows[b].lineno)));
+    match_idx.sort_by(|&a, &b| {
+        sort::cmp(
+            (order_of(rows[a].path), rows[a].path, rows[a].lineno),
+            (order_of(rows[b].path), rows[b].path, rows[b].lineno),
+            rev,
+        )
+    });
     let total_matches = match_idx.len();
 
     let mut files: Vec<&str> = rows.iter().filter(|r| r.is_match).map(|r| r.path).collect();
     files.sort_unstable();
     files.dedup();
+    // Re-order distinct files by the sort key; equal keys keep the path order from above (sort_by is
+    // stable), so the default order stays plain path order.
+    files.sort_by(|a, b| sort::cmp((order_of(a), a, 0), (order_of(b), b, 0), rev));
     let total_files = files.len();
 
-    let fingerprint =
-        cursor::fingerprint(match_idx.iter().map(|&i| (rows[i].path, rows[i].lineno)));
+    // Fingerprint stays a property of the match *set*, independent of sort order, so it detects
+    // add/remove across pages without churning when only the ordering shifts. In the default order
+    // `match_idx` is already in `(path, lineno)` order, so the extra sort is only needed when a
+    // `--sort` key reordered it.
+    let fingerprint = if c.sort.is_noop() {
+        cursor::fingerprint(match_idx.iter().map(|&i| (rows[i].path, rows[i].lineno)))
+    } else {
+        let mut fp_idx = match_idx.clone();
+        fp_idx
+            .sort_by(|&a, &b| (rows[a].path, rows[a].lineno).cmp(&(rows[b].path, rows[b].lineno)));
+        cursor::fingerprint(fp_idx.iter().map(|&i| (rows[i].path, rows[i].lineno)))
+    };
     let page_size = c.page_size.max(1);
 
     match c.mode {
         Mode::Matches => render_matches(
             &rows,
             &match_idx,
+            &file_order,
             total_matches,
             total_files,
             pattern,
@@ -157,6 +242,7 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
             &rows,
             &match_idx,
             &files,
+            &file_order,
             total_matches,
             total_files,
             &c,
@@ -170,6 +256,7 @@ pub fn format(raw: &[u8], pattern: &str, opts: SearchOptions, c: CompactOpts) ->
 fn render_matches(
     rows: &[Row],
     match_idx: &[usize],
+    file_order: &HashMap<&str, i64>,
     total_matches: usize,
     total_files: usize,
     pattern: &str,
@@ -178,11 +265,14 @@ fn render_matches(
     page_size: usize,
     fingerprint: u64,
 ) -> Page {
+    let order_of = |path: &str| file_order.get(path).copied().unwrap_or(0);
+    let key = |i: usize| (order_of(rows[i].path), rows[i].path, rows[i].lineno);
+    let rev = c.sort.reverse;
     // Keyset: count matches at or before the resume key, then take the next window.
     let skip = match &c.start_after {
-        Some((p, l)) => match_idx
+        Some((o, p, l)) => match_idx
             .iter()
-            .filter(|&&i| (rows[i].path, rows[i].lineno) <= (p.as_str(), *l))
+            .filter(|&&i| sort::cmp(key(i), (*o, p.as_str(), *l), rev) != Ordering::Greater)
             .count(),
         None => 0,
     };
@@ -197,9 +287,13 @@ fn render_matches(
     let first_index = if rendered == 0 { 0 } else { skip + 1 };
     let last_index = if rendered == 0 { 0 } else { skip + rendered };
     let has_more = skip + rendered < total_matches;
-    let last_key = window_matches
-        .last()
-        .map(|&i| (rows[i].path.to_string(), rows[i].lineno));
+    let last_key = window_matches.last().map(|&i| {
+        (
+            order_of(rows[i].path),
+            rows[i].path.to_string(),
+            rows[i].lineno,
+        )
+    });
 
     let header = if total_matches == 0 {
         "[no matches]".to_string()
@@ -223,7 +317,7 @@ fn render_matches(
             }
         })
         .collect();
-    to_render.sort_by(|&a, &b| (rows[a].path, rows[a].lineno).cmp(&(rows[b].path, rows[b].lineno)));
+    to_render.sort_by(|&a, &b| sort::cmp(key(a), key(b), rev));
     let matcher = build_matcher(&effective_pattern(pattern, opts), opts).ok();
     let mut body = String::new();
     let mut cur_path: Option<&str> = None;
@@ -269,14 +363,22 @@ fn render_by_file(
     rows: &[Row],
     match_idx: &[usize],
     files: &[&str],
+    file_order: &HashMap<&str, i64>,
     total_matches: usize,
     total_files: usize,
     c: &CompactOpts,
     page_size: usize,
     fingerprint: u64,
 ) -> Page {
+    let order_of = |path: &str| file_order.get(path).copied().unwrap_or(0);
+    let rev = c.sort.reverse;
     let skip = match &c.start_after {
-        Some((p, _)) => files.iter().filter(|&&f| f <= p.as_str()).count(),
+        Some((o, p, _)) => files
+            .iter()
+            .filter(|&&f| {
+                sort::cmp((order_of(f), f, 0), (*o, p.as_str(), 0), rev) != Ordering::Greater
+            })
+            .count(),
         None => 0,
     };
     let window: Vec<&str> = files.iter().copied().skip(skip).take(page_size).collect();
@@ -284,7 +386,7 @@ fn render_by_file(
     let first_index = if rendered == 0 { 0 } else { skip + 1 };
     let last_index = if rendered == 0 { 0 } else { skip + rendered };
     let has_more = skip + rendered < total_files;
-    let last_key = window.last().map(|&p| (p.to_string(), 0));
+    let last_key = window.last().map(|&p| (order_of(p), p.to_string(), 0));
 
     let counts: HashMap<&str, usize> = if matches!(c.mode, Mode::Count) {
         let mut m = HashMap::new();
@@ -339,7 +441,7 @@ enum Entry<'a> {
     Row(Option<Cand<'a>>, Option<Cand<'a>>),
 }
 
-fn parse_rows(text: &str) -> Vec<Row<'_>> {
+pub(crate) fn parse_rows(text: &str) -> Vec<Row<'_>> {
     let entries: Vec<Entry> = text
         .lines()
         .filter_map(|line| {
@@ -609,7 +711,7 @@ src/ab.rs:1:fn z\n";
                 ..Default::default()
             },
         );
-        assert_eq!(p1.last_key, Some(("src/a.rs".to_string(), 1)));
+        assert_eq!(p1.last_key, Some((0, "src/a.rs".to_string(), 1)));
         let p2 = page(
             RAW,
             "fn",
@@ -784,7 +886,7 @@ f.txt-4-after line\n";
             RAW,
             "fn",
             CompactOpts {
-                start_after: Some(("zzz".to_string(), 0)),
+                start_after: Some((0, "zzz".to_string(), 0)),
                 ..Default::default()
             },
         );
@@ -793,5 +895,50 @@ f.txt-4-after line\n";
         assert_eq!(p.last_index, 0);
         assert!(p.body.is_empty());
         assert_eq!(p.last_key, None);
+    }
+
+    #[test]
+    fn sort_weight_orders_and_pages_by_descending_weight() {
+        use crate::rank;
+        // a.rs matches the low-weight branch (earth, 0.3), b.rs the high-weight one (world, 0.7).
+        let raw = b"src/a.rs:1:hello earth\nsrc/b.rs:1:hello world\n";
+        let mk = |start_after| {
+            let ranking = rank::parse(
+                "world<w1>|earth<w2>",
+                Some("w1:0.7,w2:0.3"),
+                SearchOptions::default(),
+            )
+            .unwrap();
+            format(
+                raw,
+                &ranking.plain,
+                SearchOptions::default(),
+                CompactOpts {
+                    page_size: 1,
+                    start_after,
+                    sort: SortSpec {
+                        key: SortKey::Weight,
+                        reverse: false,
+                    },
+                    ranker: ranking.ranker,
+                    ..Default::default()
+                },
+            )
+        };
+        // Page 1 is the higher-weighted file; the order value rides in the keyset key.
+        let p1 = mk(None);
+        assert_eq!(p1.total_matches, 2);
+        assert!(p1.body.contains("src/b.rs"), "{}", p1.body);
+        assert!(!p1.body.contains("src/a.rs"));
+        assert!(p1.has_more);
+        assert_eq!(
+            p1.last_key.as_ref().map(|(o, _, _)| *o),
+            Some(sort::weight_to_order(0.7))
+        );
+        // Page 2 resumes after it and yields the lower-weighted file, nothing dropped.
+        let p2 = mk(p1.last_key.clone());
+        assert!(p2.body.contains("src/a.rs"), "{}", p2.body);
+        assert!(!p2.body.contains("src/b.rs"));
+        assert!(!p2.has_more);
     }
 }

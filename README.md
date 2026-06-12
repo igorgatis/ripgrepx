@@ -92,6 +92,20 @@ and because the index is warm, fetching the next page is cheap, so every match s
 rgx --compact 'fn .*Handler'                 # grouped + paged; footer prints the next-page command
 rgx --compact --cursor '<token>'             # next page (token copied from the footer)
 rgx --compact -l 'fn .*Handler'              # matching files only;  -c for per-file counts
+rgx --sortr=modified 'fn .*Handler'          # order results (like rg --sort); works bare too
+```
+
+### Ordering (`--sort` / `--sortr`)
+
+`--sort=KEY` / `--sortr=KEY` reorder results — ripgrep's own flags and vocabulary (`path`, `modified`,
+`accessed`, `created`), plus rgx's `weight` for **relevance**: tag regex alternation branches with
+`<label>`, weight them with `--weights`, and files matching higher-weighted branches float to the top.
+The `<label>` tags are stripped before searching, so the match set stays exactly `rg`'s — reordering
+only, nothing dropped. Works on the bare search (like `rg --sort`) and in `--compact`/MCP (where the
+order holds across pages).
+
+```sh
+rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
 ```
 
 ```

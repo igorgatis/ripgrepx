@@ -27,10 +27,16 @@ rgx <pattern> [path]        # rgx 'fn \w+_total' src/
 rgx -i needle               # -i case-insensitive, -s case-sensitive, -w whole-word
 rgx -F 'literal.string'     # fixed string (no regex); -U multiline
 rgx -C 3 pattern            # context (-A <n> / -B <n> / -C <n>)
+rgx --sortr=modified TODO   # order results (like rg --sort); see below
 ```
 
 - Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -A<n> -B<n> -C<n> --` (line
   numbers always on, so `-n` is a no-op). To search flag-like text: `rgx -- --foo`.
+- **Order results** with `--sort=KEY` / `--sortr=KEY` (ripgrep's flags), `KEY` = `path` | `modified` |
+  `accessed` | `created` | `weight`. `weight` is a relevance order: add `--weights=label:weight,...`
+  and tag regex alternation branches with `<label>` — e.g.
+  `rgx --sort=weight --weights=impl:0.9,call:0.1 '(process<impl>|process\(<call>)'`. The tags are
+  stripped before searching, so results stay byte-for-byte `rg`'s; reordering only, nothing dropped.
 - **Modes (`--compact`, `--find`, `--server`, `--agent`) are recognized only as the first token** —
   `rgx --compact 'fn ' src/`, never `rgx 'fn ' --compact`. Search flags can follow in any position.
 - Patterns the index can't accelerate (e.g. `.`, very short) fall back to a full scan — still correct.
@@ -42,12 +48,18 @@ rgx --compact <pattern> [path]            # grouped by file, paged, long lines t
 rgx --compact -l <pattern>                # matching file paths only (where?)
 rgx --compact -c <pattern>                # per-file match counts (how many?)
 rgx --compact --cursor '<token>'          # next page (token from the footer)
+rgx --compact --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
 ```
 
 The header `[matches 1-50 of 421 in 88 files]` tells you what you have **not** seen — page 1 is not
 the whole answer. When more remain, the footer prints the exact next command; the cursor re-runs the
 same search (single-use, ~2 min). Orient with `-l`/`-c` instead of page-walking. Nothing is dropped;
 only long lines are trimmed around the match.
+
+**`--sort` for page-1 relevance.** The same `--sort`/`--sortr` ordering works here and the order holds
+across pages. `--sort=weight` is the lever when you're OR-ing several candidate terms and know which
+you most expect: tag the branches with `<label>`, weight them with `--weights`, and the files matching
+higher-weighted branches float to page 1 (reorder only — nothing dropped).
 
 ## Find files
 

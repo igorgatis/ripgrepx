@@ -19,13 +19,33 @@ rgx <pattern> [rg flags...]
 rgx TODO -t rust
 rgx 'fn \w+_total' src/
 rgx -i needle
+rgx --sortr=modified TODO src/    # newest-changed files first (like rg --sortr)
+```
+
+### Ordering — `--sort` / `--sortr`
+
+`--sort=KEY` (ascending) and `--sortr=KEY` (descending) reorder results, matching ripgrep's flags and
+vocabulary: `KEY` is `path`, `modified`, `accessed`, or `created` (file metadata), plus rgx's own
+`weight` (relevance — see below). Reordering needs the whole result set, so like `rg --sort` it
+buffers (single command, still no `rg` binary); without `--sort`, output streams as before. rgx orders
+files exactly as `rg --sort` does. Works on the bare search and in `--compact`/MCP.
+
+**Weighted match** (`--sort=weight`) is a model-supplied relevance order: declare branch weights with
+`--weights=label:weight,...` and tag regex alternation branches in the pattern with `<label>`. The
+tags are stripped before searching, so the match set stays `rg`'s; files are ordered by the weight of
+the branch they matched (highest first), unattributed matches last. Not combinable with `-F`.
+
+```sh
+rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
 ```
 
 ## The flag surface
 
-rgx adds exactly **four** flags to ripgrep's, recognized only as the **leading token** (any other
-position goes straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and
-`--agent` gate the daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale.
+rgx adds exactly **four** modes, recognized only as the **leading token** (any other position goes
+straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and `--agent` gate the
+daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. Beyond the modes, rgx
+recognizes ripgrep's `--sort`/`--sortr` (anywhere, like the other flags) and its own `--weights` (for
+`--sort=weight`); see [Ordering](#ordering--sort--sortr).
 
 ### Search modes
 
@@ -55,6 +75,10 @@ a denser view):
 - **Orientation modes** — `-l` / `--files-with-matches` lists matching paths only; `-c` / `--count`
   lists `path:count` per file. Both answer "where / how many" in one call instead of a page-walk, and
   both page the same way (by file).
+- **Ordering** — `--sort`/`--sortr` reorder the view (by `path`/`modified`/`accessed`/`created`, or
+  `weight` with `--weights`) exactly as on the bare search above; the order is carried in the cursor,
+  so pages stay stable. See [Ordering](#ordering--sort--sortr) and
+  [`querying.md`](querying.md#ordering--sort--sortr).
 - **Long lines trimmed** — lines longer than the column budget are truncated around the match, marked
   with `…`; read the file for the full line.
 

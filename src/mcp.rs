@@ -86,12 +86,17 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                 };
                 match cursor::decode(&blob) {
                     Ok(c) => Query {
-                        start_after: c.last_path.clone().map(|p| (p, c.last_lineno)),
+                        start_after: c
+                            .last_path
+                            .clone()
+                            .map(|p| (c.last_order, p, c.last_lineno)),
                         prev: Some((c.prev_total, c.fingerprint)),
                         pattern: c.pattern,
                         opts: c.opts,
                         mode: c.mode,
                         page_size: c.page_size,
+                        sort: c.sort,
+                        weights: c.weights,
                     },
                     Err(e) => return error(id, -32602, &format!("invalid cursor: {e}")),
                 }
@@ -99,6 +104,20 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                 let Some(pattern) = arg_str(args, "pattern") else {
                     return error(id, -32602, "missing required argument 'pattern'");
                 };
+                let sort = match arg_str(args, "sort") {
+                    Some(v) => match crate::sort::parse(v, arg_bool(args, "reverse")) {
+                        Ok(s) => s,
+                        Err(e) => return error(id, -32602, &format!("{e}")),
+                    },
+                    None => crate::sort::SortSpec::default(),
+                };
+                let weights = arg_str(args, "weights").map(str::to_string);
+                if sort.needs_weights() && weights.is_none() {
+                    return error(id, -32602, "sort=weight needs weights (label:weight,...)");
+                }
+                if !sort.needs_weights() && weights.is_some() {
+                    return error(id, -32602, "weights applies only to sort=weight");
+                }
                 Query {
                     pattern: pattern.to_string(),
                     opts: SearchOptions {
@@ -118,6 +137,8 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                     start_after: None,
                     page_size: arg_usize(args, "page_size").unwrap_or(compact::DEFAULT_PAGE_SIZE),
                     prev: None,
+                    sort,
+                    weights,
                 }
             };
             tool_result(id, &compact_search(root, query))
@@ -141,10 +162,14 @@ struct Query {
     pattern: String,
     opts: SearchOptions,
     mode: Mode,
-    start_after: Option<(String, u64)>,
+    start_after: Option<(i64, String, u64)>,
     page_size: usize,
     /// `(total, fingerprint)` when resuming a cursor, for the staleness note.
     prev: Option<(usize, u32)>,
+    /// How to order results (`sort`/`reverse`).
+    sort: crate::sort::SortSpec,
+    /// The `weights` map for `sort=weight`, or `None`.
+    weights: Option<String>,
 }
 
 fn arg_bool(args: Option<&Value>, key: &str) -> bool {
@@ -167,19 +192,28 @@ fn arg_str<'a>(args: Option<&'a Value>, key: &str) -> Option<&'a str> {
 /// cursor to fetch the next page. Matching is identical to `rg`; only presentation differs (see
 /// `compact`). Paging is cheap (warm index), so an agent pulls more on demand rather than dumping all.
 fn compact_search(root: &Path, q: Query) -> String {
-    let raw = match crate::collect_search(root, &q.pattern, q.opts) {
+    // sort=weight: the plain pattern (annotations stripped) is what gets searched; the ranker only
+    // reorders the rendered view. Other keys leave the pattern untouched.
+    let ranking = match crate::rank::parse(&q.pattern, q.weights.as_deref(), q.opts) {
+        Ok(r) => r,
+        Err(e) => return format!("error: {e}"),
+    };
+    let raw = match crate::collect_search(root, &ranking.plain, q.opts) {
         Ok(b) => b,
         Err(e) => return format!("error: {e}"),
     };
     let p = compact::format(
         &raw,
-        &q.pattern,
+        &ranking.plain,
         q.opts,
         CompactOpts {
             mode: q.mode,
             start_after: q.start_after,
             page_size: q.page_size,
             max_cols: compact::DEFAULT_MAX_COLS,
+            sort: q.sort,
+            ranker: ranking.ranker,
+            root: Some(root.to_path_buf()),
         },
     );
     let mut text = format!("{}\n{}", p.header, p.body);
@@ -189,7 +223,15 @@ fn compact_search(root: &Path, q: Query) -> String {
     // root_hint is None: the MCP server root is authoritative, so the cursor never carries a path.
     // The blob is parked in this root's daemon; the agent echoes back the short token. On a store
     // failure, still tell the agent more remains so it can't mistake a partial page for the whole.
-    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None) {
+    if let Some(next) = p.next_cursor(
+        q.mode,
+        q.pattern,
+        q.opts,
+        q.page_size,
+        None,
+        q.sort,
+        q.weights,
+    ) {
         match client::store_cursor(root, cursor::encode(&next)) {
             Ok(token) => text.push_str(&format!(
                 "\n(more: call content_search with cursor: \"{token}\")"
@@ -268,6 +310,9 @@ fn tools() -> Value {
                     "files_only": {"type": "boolean", "description": "list matching file paths only (-l)"},
                     "count": {"type": "boolean", "description": "per-file match counts only (-c)"},
                     "page_size": {"type": "integer", "description": "matches (or files, for -l/-c) per page; default 50"},
+                    "sort": {"type": "string", "description": "order results by one of: path, modified, accessed, created (file metadata, like ripgrep --sort), or weight (relevance). Reorders only -- the match set is unchanged."},
+                    "reverse": {"type": "boolean", "description": "descending sort (like ripgrep --sortr); for sort=weight this puts least-relevant first"},
+                    "weights": {"type": "string", "description": "for sort=weight: declare branch weights as label:weight,... (e.g. \"impl:0.7,call:0.3\") and tag regex alternation branches in `pattern` with <label> (e.g. \"fn (process<impl>|process\\\\(<call>)\"). Files are ordered by the weight of the branch they matched (highest first). The <label> tags are stripped before searching, so the match set stays ripgrep's."},
                     "cursor": {"type": "string", "description": "opaque token from a previous response; fetches the next page and supersedes all other args"}
                 }
             }
