@@ -6,6 +6,13 @@
 //! drive rgx's `walk_builder` — its crate-default config plus the `.rgignore` name the `rg` binary
 //! adds — which is the surface rgx owns. Expected sets are baked from ripgrep's documented behavior
 //! (verified against `rg` 15.1.0), so the suite needs no `rg` binary. See `docs/indexing.md`.
+//!
+//! Caveat: the tests that create a `.git` enable ripgrep's global-gitignore stack, so a developer's
+//! own global gitignore (`core.excludesFile` / `~/.config/git/ignore`) matching a fixture name (e.g.
+//! `*.txt`/`*.rs`) could perturb a result — rare in practice. The differential fuzzer in
+//! `walk_parity_fuzz.rs` is the authoritative, environment-immune check (it diffs against the real
+//! `rg`, so any global ignore applies to both sides and cancels); these fixtures are the fast,
+//! `rg`-free floor that pinpoints which rule broke.
 
 use std::fs;
 use std::path::Path;

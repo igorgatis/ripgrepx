@@ -72,6 +72,11 @@ fn gen_tree(rng: &mut Rng, root: &Path) -> String {
     if rng.chance(3, 5) {
         fs::create_dir_all(root.join(".git")).unwrap();
         desc.push_str(".git/ (gitignore active)\n");
+        if rng.chance(2, 5) {
+            let lines: Vec<String> = (0..(1 + rng.below(2))).map(|_| pattern(rng)).collect();
+            write(root, ".git/info/exclude", &(lines.join("\n") + "\n"));
+            desc.push_str(&format!(".git/info/exclude: {}\n", lines.join(" ")));
+        }
     }
     for _ in 0..(8 + rng.below(9)) {
         let f = rel_file(rng);
