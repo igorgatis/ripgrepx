@@ -50,9 +50,22 @@ rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>
 rgx adds exactly **four** modes, recognized only as the **leading token** (any other position goes
 straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and `--agent` gate the
 daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. The ripgrep flags rgx
-passes through (anywhere, like rg): `-i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore`,
-plus ripgrep's `--sort`/`--sortr` and rgx's own `--weights` (for `--sort=weight`; see
-[Ordering](#ordering--sort--sortr)).
+passes through (anywhere, like rg): `-i -s -w -n -F -U -v -A<n> -B<n> -C<n> -g/--glob -t/--type
+-T/--type-not --hidden --no-ignore`, plus ripgrep's `--sort`/`--sortr` and rgx's own `--weights` (for
+`--sort=weight`; see [Ordering](#ordering--sort--sortr)).
+
+### File filters — `-g` / `-t` / `-T`
+
+`-g/--glob GLOB` (a leading `!` negates), `-t/--type TYPE`, and `-T/--type-not TYPE` narrow *which*
+files are searched, exactly as ripgrep does (they're ripgrep's own glob/type matchers, so the file set
+matches `rg`'s). All are repeatable. Unlike `--hidden`/`--no-ignore`, filters only *remove* files, so
+the trigram index stays in play — the candidate set is filtered down, keeping the speedup.
+
+```sh
+rgx -t rust 'fn .*Handler'        # only Rust files
+rgx -g '*.ts' -g '!*.d.ts' useAuth   # .ts but not .d.ts
+rgx -T lock 'version'             # everything except lockfiles
+```
 
 ### Search modes
 

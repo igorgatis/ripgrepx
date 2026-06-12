@@ -124,35 +124,35 @@ pub fn full_scan(
     root: &Path,
     pattern: &str,
     opts: SearchOptions,
+    filter: &crate::filter::FilterSpec,
     sink: impl Fn(&[u8]) + Sync,
 ) -> Result<()> {
     let matcher = build_matcher(pattern, opts)?;
     let matcher = &matcher;
     let sink = &sink;
-    crate::index::walk_builder_for(root, opts.hidden, opts.no_ignore)
-        .build_parallel()
-        .run(|| {
-            // Build the searcher and printer once per walk thread (not per file): for a match-everything
-            // query over tens of thousands of files, per-file printer construction dominates otherwise.
-            let mut searcher = build_searcher(opts);
-            let mut printer = StandardBuilder::new().build(NoColor::new(Vec::<u8>::new()));
-            Box::new(move |res| {
-                if let Ok(entry) = res
-                    && entry.file_type().is_some_and(|t| t.is_file())
-                {
-                    let path = entry.path();
-                    let shown = display_path(path, root);
-                    let _ =
-                        searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
-                    let buf = printer.get_mut().get_mut();
-                    if !buf.is_empty() {
-                        sink(buf);
-                        buf.clear();
-                    }
+    let mut wb = crate::index::walk_builder_for(root, opts.hidden, opts.no_ignore);
+    filter.configure_walk(root, &mut wb)?;
+    wb.build_parallel().run(|| {
+        // Build the searcher and printer once per walk thread (not per file): for a match-everything
+        // query over tens of thousands of files, per-file printer construction dominates otherwise.
+        let mut searcher = build_searcher(opts);
+        let mut printer = StandardBuilder::new().build(NoColor::new(Vec::<u8>::new()));
+        Box::new(move |res| {
+            if let Ok(entry) = res
+                && entry.file_type().is_some_and(|t| t.is_file())
+            {
+                let path = entry.path();
+                let shown = display_path(path, root);
+                let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
+                let buf = printer.get_mut().get_mut();
+                if !buf.is_empty() {
+                    sink(buf);
+                    buf.clear();
                 }
-                WalkState::Continue
-            })
-        });
+            }
+            WalkState::Continue
+        })
+    });
     Ok(())
 }
 

@@ -19,6 +19,7 @@ pub mod compact;
 pub mod config;
 pub mod confirm;
 pub mod cursor;
+pub mod filter;
 pub mod index;
 pub mod mcp;
 pub mod pagination;
@@ -34,6 +35,7 @@ pub mod transport;
 pub mod trigram;
 
 use confirm::SearchOptions;
+use filter::FilterSpec;
 use index::Index;
 use query::{Options as QueryOptions, Query};
 
@@ -72,16 +74,25 @@ pub fn is_fallback(pattern: &str, opts: SearchOptions) -> bool {
 /// index lock across blocking I/O. A fallback pattern yields every live file.
 pub fn candidate_paths(
     index: &Index,
+    root: &Path,
     pattern: &str,
     opts: SearchOptions,
-) -> Vec<std::path::PathBuf> {
+    filter: &FilterSpec,
+) -> Result<Vec<std::path::PathBuf>> {
     let effective = effective_pattern(pattern, opts);
     let query = Query::for_pattern(&effective, query_options(opts));
-    index
+    let mut paths: Vec<std::path::PathBuf> = index
         .candidates(&query)
         .into_iter()
         .map(Path::to_path_buf)
-        .collect()
+        .collect();
+    // `-g`/`-t`/`-T` only remove files, so filter the candidate set down — exactly the files `rg`
+    // would keep (these are ripgrep's own matchers).
+    if !filter.is_empty() {
+        let ff = filter.compile(root)?;
+        paths.retain(|p| ff.matched(p));
+    }
+    Ok(paths)
 }
 
 /// Stream a content search against a (ready) index, emitting `path:line:text` chunks via `emit`.
@@ -94,11 +105,16 @@ pub fn stream_search(
     root: &Path,
     pattern: &str,
     opts: SearchOptions,
+    filter: &FilterSpec,
     emit: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let effective = effective_pattern(pattern, opts);
     let query = Query::for_pattern(&effective, query_options(opts));
-    let paths = index.candidates(&query);
+    let mut paths = index.candidates(&query);
+    if !filter.is_empty() {
+        let ff = filter.compile(root)?;
+        paths.retain(|p| ff.matched(p));
+    }
     confirm::search_streaming(&effective, &paths, root, opts, emit)
 }
 
@@ -110,10 +126,11 @@ pub fn stream_full_scan(
     root: impl AsRef<Path>,
     pattern: &str,
     opts: SearchOptions,
+    filter: &FilterSpec,
     sink: impl Fn(&[u8]) + Sync,
 ) -> Result<()> {
     let effective = effective_pattern(pattern, opts);
-    confirm::full_scan(root.as_ref(), &effective, opts, sink)
+    confirm::full_scan(root.as_ref(), &effective, opts, filter, sink)
 }
 
 /// Run a content search and buffer the whole `path:line:text` output, for callers that need the
@@ -122,10 +139,15 @@ pub fn stream_full_scan(
 /// in-process in nondeterministic order. Neither is guaranteed sorted, so the compact view sorts the
 /// matches itself (see `compact::format`); the fallback block-sort here is a cheap extra that keeps
 /// even the raw buffered bytes deterministic across runs.
-pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
+pub fn collect_search(
+    root: &Path,
+    pattern: &str,
+    opts: SearchOptions,
+    filter: &FilterSpec,
+) -> Result<Vec<u8>> {
     if is_fallback(pattern, opts) {
         let chunks = std::sync::Mutex::new(Vec::<Vec<u8>>::new());
-        stream_full_scan(root, pattern, opts, |c| {
+        stream_full_scan(root, pattern, opts, filter, |c| {
             if let Ok(mut v) = chunks.lock() {
                 v.push(c.to_vec());
             }
@@ -139,6 +161,7 @@ pub fn collect_search(root: &Path, pattern: &str, opts: SearchOptions) -> Result
             &proto::Request::Search {
                 opts,
                 pattern: pattern.to_string(),
+                filter: filter.clone(),
             },
         )
     }
@@ -154,11 +177,12 @@ pub fn collect_search_sorted(
     root: &Path,
     pattern: &str,
     opts: SearchOptions,
+    filter: &FilterSpec,
     sort: sort::SortSpec,
     weights: Option<&str>,
 ) -> Result<Vec<u8>> {
     let ranking = rank::parse(pattern, weights, opts)?;
-    let raw = collect_search(root, &ranking.plain, opts)?;
+    let raw = collect_search(root, &ranking.plain, opts, filter)?;
     let text = String::from_utf8_lossy(&raw);
     let rows = compact::parse_rows(&text);
     let order = compact::file_order_map(&rows, sort, ranking.ranker.as_ref(), Some(root));
@@ -185,7 +209,7 @@ pub fn collect_search_sorted(
 /// Collecting convenience over [`stream_search`] (used in tests).
 pub fn search(index: &Index, root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    stream_search(index, root, pattern, opts, |c| {
+    stream_search(index, root, pattern, opts, &FilterSpec::default(), |c| {
         out.extend_from_slice(c);
         Ok(())
     })?;

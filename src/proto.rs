@@ -9,6 +9,7 @@ use std::io::{ErrorKind, Read, Write};
 use anyhow::{Result, bail};
 
 use crate::confirm::SearchOptions;
+use crate::filter::FilterSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -16,6 +17,7 @@ pub enum Request {
     Search {
         opts: SearchOptions,
         pattern: String,
+        filter: FilterSpec,
     },
     /// File/dir name lookup (fd/find-style). `after` resumes a keyset page: only paths strictly
     /// greater than it are returned (empty/None = from the start).
@@ -69,12 +71,19 @@ pub(crate) fn unpack_opts(b: u8, before: u32, after: u32) -> SearchOptions {
 pub fn write_request(w: &mut impl Write, req: &Request) -> Result<()> {
     let mut body = Vec::new();
     match req {
-        Request::Search { opts, pattern } => {
+        Request::Search {
+            opts,
+            pattern,
+            filter,
+        } => {
             body.push(b'S');
             body.push(pack_opts(opts));
             body.extend_from_slice(&(opts.before_context as u32).to_le_bytes());
             body.extend_from_slice(&(opts.after_context as u32).to_le_bytes());
             put_bytes(&mut body, pattern.as_bytes());
+            put_str_list(&mut body, &filter.globs);
+            put_str_list(&mut body, &filter.types);
+            put_str_list(&mut body, &filter.type_nots);
         }
         Request::Find {
             needle,
@@ -112,7 +121,18 @@ pub fn read_request(r: &mut impl Read) -> Result<Request> {
             let after = take_u32(&mut cur)?;
             let opts = unpack_opts(flags, before, after);
             let pattern = String::from_utf8(take_bytes(&mut cur)?)?;
-            Request::Search { opts, pattern }
+            let globs = take_str_list(&mut cur)?;
+            let types = take_str_list(&mut cur)?;
+            let type_nots = take_str_list(&mut cur)?;
+            Request::Search {
+                opts,
+                pattern,
+                filter: FilterSpec {
+                    globs,
+                    types,
+                    type_nots,
+                },
+            }
         }
         b'F' => {
             let limit = take_u32(&mut cur)?;
@@ -288,6 +308,22 @@ fn put_bytes(buf: &mut Vec<u8>, b: &[u8]) {
     buf.extend_from_slice(b);
 }
 
+fn put_str_list(buf: &mut Vec<u8>, items: &[String]) {
+    buf.extend_from_slice(&(items.len() as u32).to_le_bytes());
+    for s in items {
+        put_bytes(buf, s.as_bytes());
+    }
+}
+
+fn take_str_list(cur: &mut &[u8]) -> Result<Vec<String>> {
+    let n = take_u32(cur)? as usize;
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        v.push(String::from_utf8(take_bytes(cur)?)?);
+    }
+    Ok(v)
+}
+
 fn take_u8(cur: &mut &[u8]) -> Result<u8> {
     let (&b, rest) = cur
         .split_first()
@@ -334,6 +370,11 @@ mod tests {
                 ..Default::default()
             },
             pattern: "Foo|Bar".to_string(),
+            filter: FilterSpec {
+                globs: vec!["*.rs".into(), "!*_test.rs".into()],
+                types: vec!["rust".into()],
+                type_nots: vec![],
+            },
         });
         roundtrip(Request::Find {
             needle: "config".into(),

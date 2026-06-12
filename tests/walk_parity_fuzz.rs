@@ -134,6 +134,65 @@ fn walk_matches_rg_on_random_trees() {
 }
 
 #[test]
+fn candidate_filter_matches_rg_file_selection() {
+    if common::rg().is_none() {
+        eprintln!("rg not on PATH; skipping -g/-t candidate-filter parity");
+        return;
+    }
+    use rgx::filter::FilterSpec;
+    let td = tempfile::tempdir().unwrap();
+    let r = td.path();
+    write(r, "a.rs", "x\n");
+    write(r, "b.py", "x\n");
+    write(r, "c.txt", "x\n");
+    write(r, "sub/d.rs", "x\n");
+    write(r, "sub/e.py", "x\n");
+    let index = rgx::index::Index::build(r);
+
+    let glob = |g: &str| FilterSpec {
+        globs: vec![g.to_string()],
+        ..Default::default()
+    };
+    let type_ = |t: &str| FilterSpec {
+        types: vec![t.to_string()],
+        ..Default::default()
+    };
+    let type_not = |t: &str| FilterSpec {
+        type_nots: vec![t.to_string()],
+        ..Default::default()
+    };
+    let cases: Vec<(FilterSpec, Vec<&str>)> = vec![
+        (type_("rust"), vec!["-t", "rust"]),
+        (type_not("rust"), vec!["-T", "rust"]),
+        (glob("*.py"), vec!["-g", "*.py"]),
+        (glob("!*.rs"), vec!["-g", "!*.rs"]),
+    ];
+    for (spec, flags) in cases {
+        // A fallback pattern (`.`) makes every indexed file a candidate, so what remains is exactly the
+        // filter's effect — which must equal the files `rg --files <flags>` would search.
+        let mut ours: Vec<String> = rgx::candidate_paths(
+            &index,
+            r,
+            ".",
+            rgx::confirm::SearchOptions::default(),
+            &spec,
+        )
+        .unwrap()
+        .iter()
+        .map(|p| {
+            p.strip_prefix(r)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+        ours.sort();
+        let theirs = common::rg_files_with(r, &flags);
+        assert_eq!(ours, theirs, "flags {flags:?}");
+    }
+}
+
+#[test]
 fn hidden_and_no_ignore_match_rg() {
     if common::rg().is_none() {
         eprintln!("rg not on PATH; skipping --hidden/--no-ignore parity");

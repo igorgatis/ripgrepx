@@ -16,6 +16,7 @@ use crate::client;
 use crate::compact::{self, CompactOpts};
 use crate::confirm::SearchOptions;
 use crate::cursor::{self, Mode};
+use crate::filter::FilterSpec;
 use crate::proto::Request;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -97,6 +98,7 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                         page_size: c.page_size,
                         sort: c.sort,
                         weights: c.weights,
+                        filter: c.filter,
                     },
                     Err(e) => return error(id, -32602, &format!("invalid cursor: {e}")),
                 }
@@ -142,6 +144,11 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
                     prev: None,
                     sort,
                     weights,
+                    filter: FilterSpec {
+                        globs: arg_str_list(args, "globs"),
+                        types: arg_str_list(args, "types"),
+                        type_nots: arg_str_list(args, "type_nots"),
+                    },
                 }
             };
             tool_result(id, &compact_search(root, query))
@@ -173,6 +180,8 @@ struct Query {
     sort: crate::sort::SortSpec,
     /// The `weights` map for `sort=weight`, or `None`.
     weights: Option<String>,
+    /// `-g`/`-t`/`-T` file filter.
+    filter: FilterSpec,
 }
 
 fn arg_bool(args: Option<&Value>, key: &str) -> bool {
@@ -191,17 +200,34 @@ fn arg_str<'a>(args: Option<&'a Value>, key: &str) -> Option<&'a str> {
     args.and_then(|a| a.get(key)).and_then(Value::as_str)
 }
 
+/// A JSON array of strings argument (e.g. `globs`), or empty when absent.
+fn arg_str_list(args: Option<&Value>, key: &str) -> Vec<String> {
+    args.and_then(|a| a.get(key))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Run a content search and return the token-savings view: results grouped by file and paged, with a
 /// cursor to fetch the next page. Matching is identical to `rg`; only presentation differs (see
 /// `compact`). Paging is cheap (warm index), so an agent pulls more on demand rather than dumping all.
 fn compact_search(root: &Path, q: Query) -> String {
+    // Validate the filter here — a bad glob / unknown type would otherwise be swallowed on the daemon
+    // path (the request handler ignores content_search errors).
+    if let Err(e) = q.filter.compile(root) {
+        return format!("error: {e}");
+    }
     // sort=weight: the plain pattern (annotations stripped) is what gets searched; the ranker only
     // reorders the rendered view. Other keys leave the pattern untouched.
     let ranking = match crate::rank::parse(&q.pattern, q.weights.as_deref(), q.opts) {
         Ok(r) => r,
         Err(e) => return format!("error: {e}"),
     };
-    let raw = match crate::collect_search(root, &ranking.plain, q.opts) {
+    let raw = match crate::collect_search(root, &ranking.plain, q.opts, &q.filter) {
         Ok(b) => b,
         Err(e) => return format!("error: {e}"),
     };
@@ -230,6 +256,7 @@ fn compact_search(root: &Path, q: Query) -> String {
         q.mode,
         q.pattern,
         q.opts,
+        q.filter,
         q.page_size,
         None,
         q.sort,
@@ -313,6 +340,9 @@ fn tools() -> Value {
                     "invert_match": {"type": "boolean", "description": "return non-matching lines (-v)"},
                     "hidden": {"type": "boolean", "description": "also search hidden files/dirs (--hidden)"},
                     "no_ignore": {"type": "boolean", "description": "ignore .gitignore/.ignore rules (--no-ignore)"},
+                    "globs": {"type": "array", "items": {"type": "string"}, "description": "include/exclude files by glob (-g); a leading ! negates, e.g. [\"*.rs\", \"!*_test.rs\"]"},
+                    "types": {"type": "array", "items": {"type": "string"}, "description": "restrict to file types (-t), e.g. [\"rust\", \"py\"]"},
+                    "type_nots": {"type": "array", "items": {"type": "string"}, "description": "exclude file types (-T), e.g. [\"lock\"]"},
                     "files_only": {"type": "boolean", "description": "list matching file paths only (-l)"},
                     "count": {"type": "boolean", "description": "per-file match counts only (-c)"},
                     "page_size": {"type": "integer", "description": "matches (or files, for -l/-c) per page; default 50"},

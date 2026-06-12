@@ -11,14 +11,15 @@ use anyhow::{Result, bail};
 use rustc_hash::FxHasher;
 
 use crate::confirm::SearchOptions;
+use crate::filter::FilterSpec;
 use crate::proto::{pack_opts, unpack_opts};
 use crate::sort::SortSpec;
 
 const KIND: u8 = 0x01;
-// 0x03: the packed-options byte grew from 5 to 8 flag bits (invert/hidden/no_ignore). Bumping the
-// version makes a cross-version binary reject a cursor it would otherwise misread (decoding the new
-// flags as unset) rather than silently serving the wrong result set.
-const VERSION: u8 = 0x03;
+// Bump on any wire-shape change so a cross-version binary cleanly rejects a cursor it would otherwise
+// misread. 0x03: opts byte grew 5 -> 8 flag bits (invert/hidden/no_ignore). 0x04: added the
+// `-g`/`-t`/`-T` filter lists.
+const VERSION: u8 = 0x04;
 
 /// The compact output shape a cursor paginates over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,6 +39,8 @@ pub struct Cursor {
     pub mode: Mode,
     pub pattern: String,
     pub opts: SearchOptions,
+    /// The `-g`/`-t`/`-T` file filter, so the next page narrows the same way.
+    pub filter: FilterSpec,
     pub page_size: usize,
     /// Keyset position: resume after this `(order, path, lineno)` (lineno is 0 in files/count modes;
     /// `order` is the sort value — 0 for the default order).
@@ -88,6 +91,9 @@ pub fn encode(c: &Cursor) -> Vec<u8> {
     put_opt(&mut b, c.last_path.as_deref());
     put_opt(&mut b, c.root_hint.as_deref());
     put_opt(&mut b, c.weights.as_deref());
+    put_str_list(&mut b, &c.filter.globs);
+    put_str_list(&mut b, &c.filter.types);
+    put_str_list(&mut b, &c.filter.type_nots);
     put_bytes(&mut b, c.pattern.as_bytes());
     b
 }
@@ -121,11 +127,19 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
     let last_path = take_opt(&mut cur)?;
     let root_hint = take_opt(&mut cur)?;
     let weights = take_opt(&mut cur)?;
+    let globs = take_str_list(&mut cur)?;
+    let types = take_str_list(&mut cur)?;
+    let type_nots = take_str_list(&mut cur)?;
     let pattern = String::from_utf8(take_bytes(&mut cur)?)?;
     Ok(Cursor {
         mode,
         pattern,
         opts,
+        filter: FilterSpec {
+            globs,
+            types,
+            type_nots,
+        },
         page_size,
         last_path,
         last_lineno,
@@ -136,6 +150,22 @@ pub fn decode(bytes: &[u8]) -> Result<Cursor> {
         fingerprint,
         root_hint,
     })
+}
+
+fn put_str_list(buf: &mut Vec<u8>, items: &[String]) {
+    put_varint(buf, items.len() as u64);
+    for s in items {
+        put_bytes(buf, s.as_bytes());
+    }
+}
+
+fn take_str_list(cur: &mut &[u8]) -> Result<Vec<String>> {
+    let n = take_varint(cur)? as usize;
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        v.push(String::from_utf8(take_bytes(cur)?)?);
+    }
+    Ok(v)
 }
 
 /// LEB128 unsigned varint: small values cost 1 byte, keeping a typical cursor short.
@@ -220,6 +250,11 @@ mod tests {
                 word: true,
                 after_context: 3,
                 ..Default::default()
+            },
+            filter: FilterSpec {
+                globs: vec!["*.rs".into()],
+                types: vec!["rust".into()],
+                type_nots: vec![],
             },
             page_size: 25,
             last_path: Some("src/café.rs".into()),

@@ -4,8 +4,8 @@
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
 //! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -A/-B/-C,
-//! --hidden, --no-ignore, `--`, and `--sort`/`--sortr`); `--weights` is rgx's own (feeds
-//! `--sort=weight`).
+//! -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, and `--sort`/`--sortr`);
+//! `--weights` is rgx's own (feeds `--sort=weight`).
 
 use std::io::Write;
 use std::path::Path;
@@ -14,6 +14,7 @@ use std::process::ExitCode;
 use rgx::compact::{self, CompactOpts};
 use rgx::confirm::SearchOptions;
 use rgx::cursor::{self, Mode};
+use rgx::filter::FilterSpec;
 use rgx::paths::resolve_root;
 use rgx::proto::Request;
 use rgx::sort::SortSpec;
@@ -64,7 +65,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore --sort=KEY --sortr=KEY --\n\
+         flags: -i -s -w -n -F -U -v -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -83,9 +84,9 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --version                                    print the rgx version (also -V)
 
 DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -n -F -U -v -A<n> -B<n> -C<n> --hidden --no-ignore --. rgx's own modes
-are recognized only as the first token. Examples:
-    rgx 'fn \\w+_total' src/        rgx -i needle        rgx -- --server   (literal flag)
+(anywhere, like rg): -i -s -w -n -F -U -v -A<n> -B<n> -C<n> -g/--glob -t/--type -T/--type-not
+--hidden --no-ignore --. rgx's own modes are recognized only as the first token. Examples:
+    rgx 'fn \\w+_total' src/    rgx -t rust TODO    rgx -g '*.ts' useAuth    rgx -- --server
 
 ORDER results like `rg --sort` — `--sort=KEY` (asc) / `--sortr=KEY` (desc), KEY = path | modified |
 accessed | created (file metadata) | weight (relevance). For weight, declare branch weights with
@@ -402,6 +403,7 @@ struct ParsedSearch<'a> {
     page_size: Option<usize>,
     sort: SortSpec,
     weights: Option<&'a str>,
+    filter: FilterSpec,
     mode: Mode,
     positionals: Vec<&'a str>,
 }
@@ -413,6 +415,7 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
     let mut page_size: Option<usize> = None;
     let mut sort = SortSpec::default();
     let mut weights: Option<&str> = None;
+    let mut filter = FilterSpec::default();
     let mut mode = Mode::Matches;
     let mut only_positional = false; // set by `--`
     let mut i = 0;
@@ -478,6 +481,33 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
                 i += consumed;
                 continue;
             }
+            g if is_value_flag(g, "-g", "--glob") => {
+                let Some((v, consumed)) = take_value_flag(args, i, "-g", "--glob") else {
+                    eprintln!("rgx: -g/--glob needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                filter.globs.push(v.to_string());
+                i += consumed;
+                continue;
+            }
+            t if is_value_flag(t, "-t", "--type") => {
+                let Some((v, consumed)) = take_value_flag(args, i, "-t", "--type") else {
+                    eprintln!("rgx: -t/--type needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                filter.types.push(v.to_string());
+                i += consumed;
+                continue;
+            }
+            tn if is_value_flag(tn, "-T", "--type-not") => {
+                let Some((v, consumed)) = take_value_flag(args, i, "-T", "--type-not") else {
+                    eprintln!("rgx: -T/--type-not needs a value");
+                    return Err(ExitCode::from(2));
+                };
+                filter.type_nots.push(v.to_string());
+                i += consumed;
+                continue;
+            }
             ctx if ctx.starts_with("-A") || ctx.starts_with("-B") || ctx.starts_with("-C") => {
                 let (n, consumed) = match context_value(args, i) {
                     Some(v) => v,
@@ -510,9 +540,37 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
         page_size,
         sort,
         weights,
+        filter,
         mode,
         positionals,
     })
+}
+
+/// Whether `a` is a repeatable value flag in any of its four forms: `-x` / `-xVAL` (short) or
+/// `--name` / `--name=VAL` (long).
+fn is_value_flag(a: &str, short: &str, long: &str) -> bool {
+    a == short
+        || a == long
+        || a.starts_with(&format!("{long}="))
+        || (a.starts_with(short) && a.len() > short.len())
+}
+
+/// Extract a repeatable value flag's value and the number of argv tokens consumed (`-xVAL`/`--name=VAL`
+/// inline = 1, `-x VAL`/`--name VAL` separate = 2).
+fn take_value_flag<'a>(
+    args: &'a [String],
+    i: usize,
+    short: &str,
+    long: &str,
+) -> Option<(&'a str, usize)> {
+    let a = args[i].as_str();
+    if a == short || a == long {
+        return args.get(i + 1).map(|v| (v.as_str(), 2));
+    }
+    if let Some(v) = a.strip_prefix(short).filter(|v| !v.is_empty()) {
+        return Some((v, 1));
+    }
+    a.strip_prefix(&format!("{long}=")).map(|v| (v, 1))
 }
 
 /// Parse a `--sort`/`--sortr` flag value into a [`SortSpec`], reporting a usage error as an exit code.
@@ -527,6 +585,15 @@ fn parse_sort_flag(
         return Err(ExitCode::from(2));
     };
     rgx::sort::parse(v, reverse).map_err(|e| {
+        eprintln!("rgx: {e}");
+        ExitCode::from(2)
+    })
+}
+
+/// Validate `-g`/`-t`/`-T` before dispatch (a bad glob or unknown type name), so the error surfaces
+/// here rather than being swallowed on the daemon path. The daemon recompiles its own copy.
+fn check_filter(filter: &FilterSpec, root: &Path) -> Result<(), ExitCode> {
+    filter.compile(root).map(|_| ()).map_err(|e| {
         eprintln!("rgx: {e}");
         ExitCode::from(2)
     })
@@ -571,13 +638,22 @@ fn content_cmd(args: &[String]) -> ExitCode {
     if let Err(code) = check_sort(parsed.sort, parsed.weights) {
         return code;
     }
+    if let Err(code) = check_filter(&parsed.filter, &root) {
+        return code;
+    }
 
     // `--sort`/`--sortr`: reorder results, the way `rg --sort` does. Reordering requires seeing the
     // whole result set, so it leaves the streaming fast path and buffers (still single command, no
     // `rg` binary). Absence of `--sort` keeps today's byte-for-byte streaming below.
     if !parsed.sort.is_noop() {
-        return match rgx::collect_search_sorted(&root, &pattern, opts, parsed.sort, parsed.weights)
-        {
+        return match rgx::collect_search_sorted(
+            &root,
+            &pattern,
+            opts,
+            &parsed.filter,
+            parsed.sort,
+            parsed.weights,
+        ) {
             Ok(bytes) => {
                 match std::io::stdout().write_all(&bytes) {
                     Ok(()) if bytes.is_empty() => ExitCode::from(1),
@@ -611,7 +687,7 @@ fn content_cmd(args: &[String]) -> ExitCode {
         // flush once per line; the mutex serializes the parallel walk threads' writes.
         let out = Mutex::new(BufWriter::with_capacity(64 * 1024, std::io::stdout()));
         let bytes = AtomicU64::new(0);
-        let res = rgx::stream_full_scan(&root, &pattern, opts, |c| {
+        let res = rgx::stream_full_scan(&root, &pattern, opts, &parsed.filter, |c| {
             bytes.fetch_add(c.len() as u64, Ordering::Relaxed);
             if let Ok(mut w) = out.lock() {
                 let _ = w.write_all(c);
@@ -628,7 +704,12 @@ fn content_cmd(args: &[String]) -> ExitCode {
         };
     }
 
-    match client::request_stream(&root, &Request::Search { opts, pattern }, &mut stdout) {
+    let req = Request::Search {
+        opts,
+        pattern,
+        filter: parsed.filter,
+    };
+    match client::request_stream(&root, &req, &mut stdout) {
         Ok(0) => ExitCode::from(1),
         Ok(_) => ExitCode::SUCCESS,
         // A closed stdout (e.g. `rgx pat | head`) is a clean exit for a grep-like tool, not an error.
@@ -657,7 +738,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     // from the flags + positionals. `prev` is the (total, fingerprint) at mint time, for the
     // staleness check below.
     #[allow(clippy::type_complexity)]
-    let (pattern, opts, mode, start_after, page_size, root_hint, sort, weights, prev): (
+    let (pattern, opts, mode, start_after, page_size, root_hint, sort, weights, filter, prev): (
         String,
         SearchOptions,
         Mode,
@@ -666,6 +747,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         Option<String>,
         SortSpec,
         Option<String>,
+        FilterSpec,
         Option<(usize, u32)>,
     ) = if let Some(tok) = parsed.cursor {
         // The cursor is self-contained, so any co-supplied query flag would be silently dropped.
@@ -673,6 +755,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         let stray_flags = parsed.page_size.is_some()
             || !parsed.sort.is_noop()
             || parsed.weights.is_some()
+            || !parsed.filter.is_empty()
             || parsed.mode != Mode::Matches
             || parsed.opts != SearchOptions::default();
         if !parsed.positionals.is_empty() || stray_flags {
@@ -710,6 +793,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             c.root_hint,
             c.sort,
             c.weights,
+            c.filter,
             Some((c.prev_total, c.fingerprint)),
         )
     } else {
@@ -733,6 +817,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             rest.first().map(|s| s.to_string()),
             parsed.sort,
             parsed.weights.map(str::to_string),
+            parsed.filter,
             None,
         )
     };
@@ -748,7 +833,10 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         }
     };
     let root = resolve_root(root_hint.as_deref());
-    let raw = match rgx::collect_search(&root, &ranking.plain, opts) {
+    if let Err(code) = check_filter(&filter, &root) {
+        return code;
+    }
+    let raw = match rgx::collect_search(&root, &ranking.plain, opts, &filter) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("rgx: {e}");
@@ -780,7 +868,9 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     // resolved absolute root: the caller pages from the same directory, so it re-resolves the same
     // tree. `root_hint` is already that scope from the branches above. Park the blob in the cwd daemon
     // and print its short token.
-    if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint, sort, weights) {
+    if let Some(next) = page.next_cursor(
+        mode, pattern, opts, filter, page_size, root_hint, sort, weights,
+    ) {
         match rgx::client::store_cursor(&cwd, cursor::encode(&next)) {
             Ok(token) => {
                 let _ = writeln!(out, "next: rgx --compact --cursor {}", shell_quote(&token));
@@ -855,6 +945,26 @@ mod tests {
         let args = argv(&["-v", "--hidden", "--no-ignore", "needle"]);
         let p = parse_search(&args, false).unwrap();
         assert!(p.opts.invert && p.opts.hidden && p.opts.no_ignore);
+        assert_eq!(p.positionals, vec!["needle"]);
+    }
+
+    #[test]
+    fn parses_glob_and_type_flags_repeatable() {
+        // Mix attached/separate short forms and the long forms; all repeatable.
+        let args = argv(&[
+            "-trust",
+            "--type",
+            "py",
+            "-g",
+            "*.rs",
+            "--glob=!*_test.rs",
+            "-Tlock",
+            "needle",
+        ]);
+        let p = parse_search(&args, false).unwrap();
+        assert_eq!(p.filter.types, vec!["rust", "py"]);
+        assert_eq!(p.filter.globs, vec!["*.rs", "!*_test.rs"]);
+        assert_eq!(p.filter.type_nots, vec!["lock"]);
         assert_eq!(p.positionals, vec!["needle"]);
     }
 

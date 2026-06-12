@@ -47,6 +47,12 @@ a roaring bitmap of file IDs, so the AND-of-ORs is a series of cheap sorted-bitm
 result is the set of candidate file IDs (resolved to live paths via the file table). See
 [`indexing.md`](indexing.md) for the index structure.
 
+The `-g`/`-t`/`-T` filters (`src/filter.rs`) narrow that candidate set further: ripgrep's own
+`ignore::overrides`/`ignore::types` matchers remove the files `rg` would skip, so the file set matches
+`rg`'s while the trigram acceleration is preserved (filters only *remove* candidates). On the fallback
+walk the same matchers are handed to the `WalkBuilder` instead. The raw filter strings ride the daemon
+wire and the pagination cursor; a bad glob or unknown `-t` type is rejected up front.
+
 A fallback query (no usable trigram) simply makes *every* live file a candidate; there is no separate
 code path — ripgrep confirms over whatever `candidates()` returns. The CLI shortcuts a fallback query
 straight to an in-process pipelined scan (below) rather than the daemon, since the index can't narrow

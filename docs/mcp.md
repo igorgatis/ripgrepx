@@ -92,10 +92,12 @@ sync with behavior (see `CLAUDE.md`).
 This page describes the intended interface; the current stdio server implements a subset:
 
 - **content_search** — `pattern` (regex) plus `case_insensitive` / `word` / `fixed_strings` /
-  `multi_line`, `page_size`, the `files_only` / `count` orientation modes, `sort` + `reverse` +
-  `weights` (order results by `path`/`modified`/`accessed`/`created` or `weight` — reorders without
-  changing the match set, see [`querying.md`](querying.md#ordering--sort--sortr)), and `cursor`
-  (resume, supersedes the other args); results in the compact, paged, grouped-by-file view.
+  `multi_line` / `invert_match` / `hidden` / `no_ignore`, the `globs` / `types` / `type_nots` file
+  filters (arrays — `-g`/`-t`/`-T`), `page_size`, the `files_only` / `count` orientation modes, `sort`
+  + `reverse` + `weights` (order results by `path`/`modified`/`accessed`/`created` or `weight` —
+  reorders without changing the match set, see [`querying.md`](querying.md#ordering--sort--sortr)),
+  and `cursor` (resume, supersedes the other args); results in the compact, paged, grouped-by-file
+  view.
 - **file_search** — `query` substring over indexed paths, plus `limit` and `after` (keyset paging);
   reports the true total.
 - **status** — index readiness and counts.

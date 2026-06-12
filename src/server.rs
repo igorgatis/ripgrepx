@@ -299,8 +299,12 @@ fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
         // Errors here are essentially "client went away mid-stream"; ignore so we still attempt the
         // stream terminator below — a request that produced N frames then errored should not look
         // different to the client than a clean finish.
-        Request::Search { opts, pattern } => {
-            let _ = content_search(shared, &pattern, opts, &mut conn);
+        Request::Search {
+            opts,
+            pattern,
+            filter,
+        } => {
+            let _ = content_search(shared, &pattern, opts, &filter, &mut conn);
         }
         Request::Find {
             needle,
@@ -354,6 +358,7 @@ fn content_search(
     shared: &Shared,
     pattern: &str,
     opts: SearchOptions,
+    filter: &crate::filter::FilterSpec,
     conn: &mut Stream,
 ) -> Result<()> {
     // The index can only serve a query the index can narrow. A fallback query — no usable trigram, or
@@ -364,7 +369,8 @@ fn content_search(
         // Resolve candidates while holding the read lock, then RELEASE it before streaming: ripgrep
         // confirm + blocking socket writes must never run under the index lock, or a slow client
         // would block the watcher's write lock and freeze indexing.
-        let paths = crate::candidate_paths(&shared.read_index(), pattern, opts);
+        let paths =
+            crate::candidate_paths(&shared.read_index(), &shared.root, pattern, opts, filter)?;
         let effective = crate::effective_pattern(pattern, opts);
         let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         crate::confirm::search_streaming(&effective, &refs, &shared.root, opts, |chunk| {
@@ -375,7 +381,7 @@ fn content_search(
         // scan with the request's walk/searcher config. The sink is shared across walk threads, so
         // guard the socket with a mutex.
         let conn = std::sync::Mutex::new(conn);
-        crate::stream_full_scan(&shared.root, pattern, opts, |chunk| {
+        crate::stream_full_scan(&shared.root, pattern, opts, filter, |chunk| {
             if let Ok(mut c) = conn.lock() {
                 let _ = proto::write_data(&mut **c, chunk);
             }

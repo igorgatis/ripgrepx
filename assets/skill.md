@@ -28,13 +28,16 @@ rgx -i needle               # -i case-insensitive, -s case-sensitive, -w whole-w
 rgx -F 'literal.string'     # fixed string (no regex); -U multiline
 rgx -C 3 pattern            # context (-A <n> / -B <n> / -C <n>)
 rgx -v pattern              # non-matching lines (-v / --invert-match)
+rgx -t rust 'fn .*Handler'  # only Rust files (-t/--type, -T/--type-not, repeatable)
+rgx -g '*.ts' useAuth       # filter by glob (-g/--glob; leading ! negates)
 rgx --hidden --no-ignore p  # also search hidden + ignored files
 rgx --sortr=modified TODO   # order results (like rg --sort); see below
 ```
 
 - Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -v -A<n> -B<n> -C<n>
-  --hidden --no-ignore --` (line numbers always on, so `-n` is a no-op). To search flag-like text:
-  `rgx -- --foo`. (`-v`/`--hidden`/`--no-ignore` scan in-process — same output, just no index speedup.)
+  -g/--glob -t/--type -T/--type-not --hidden --no-ignore --` (line numbers always on, so `-n` is a
+  no-op). To search flag-like text: `rgx -- --foo`. `-g`/`-t`/`-T` narrow the search (still
+  index-accelerated); `-v`/`--hidden`/`--no-ignore` scan in-process (same output, no index speedup).
 - **Order results** with `--sort=KEY` / `--sortr=KEY` (ripgrep's flags), `KEY` = `path` | `modified` |
   `accessed` | `created` | `weight`. `weight` is a relevance order: add `--weights=label:weight,...`
   and tag regex alternation branches with `<label>` — e.g.
