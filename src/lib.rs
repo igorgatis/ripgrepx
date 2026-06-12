@@ -21,6 +21,7 @@ pub mod confirm;
 pub mod cursor;
 pub mod index;
 pub mod mcp;
+pub mod pagination;
 pub mod paths;
 pub mod proto;
 pub mod query;

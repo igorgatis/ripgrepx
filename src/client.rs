@@ -35,6 +35,25 @@ pub fn request_existing(root: &Path, req: &Request) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// Park a pagination cursor blob in `root`'s daemon (spawning it if needed); returns the short token
+/// to print in place of the blob.
+pub fn store_cursor(root: &Path, blob: Vec<u8>) -> Result<String> {
+    let out = request(root, &Request::CursorStore { blob })?;
+    Ok(String::from_utf8(out)?)
+}
+
+/// Redeem a pagination token at `root`'s daemon. `Ok(None)` means it expired or was already used (the
+/// daemon replies with an empty frame), so the caller should re-run the search.
+pub fn take_cursor(root: &Path, token: &str) -> Result<Option<Vec<u8>>> {
+    let blob = request(
+        root,
+        &Request::CursorTake {
+            token: token.to_string(),
+        },
+    )?;
+    Ok((!blob.is_empty()).then_some(blob))
+}
+
 /// Subscribe to the daemon's live status (spawning it if needed), invoking `render` with each status
 /// frame as it arrives, until the daemon closes the stream (or the process is interrupted).
 pub fn watch(root: &Path, mut render: impl FnMut(&[u8])) -> Result<()> {

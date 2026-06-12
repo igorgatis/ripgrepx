@@ -31,6 +31,11 @@ pub enum Request {
     Watch,
     /// Ask the daemon to exit.
     Shutdown,
+    /// Park a pagination cursor blob; the daemon replies with a short opaque token.
+    CursorStore { blob: Vec<u8> },
+    /// Redeem a pagination token; the daemon replies with the blob, or an empty frame if it has
+    /// expired or was already used.
+    CursorTake { token: String },
 }
 
 pub(crate) fn pack_opts(o: &SearchOptions) -> u8 {
@@ -76,6 +81,14 @@ pub fn write_request(w: &mut impl Write, req: &Request) -> Result<()> {
         Request::Status => body.push(b'T'),
         Request::Watch => body.push(b'W'),
         Request::Shutdown => body.push(b'Q'),
+        Request::CursorStore { blob } => {
+            body.push(b'P');
+            put_bytes(&mut body, blob);
+        }
+        Request::CursorTake { token } => {
+            body.push(b'G');
+            put_bytes(&mut body, token.as_bytes());
+        }
     }
     write_frame(w, &body)
 }
@@ -107,6 +120,12 @@ pub fn read_request(r: &mut impl Read) -> Result<Request> {
         b'T' => Request::Status,
         b'W' => Request::Watch,
         b'Q' => Request::Shutdown,
+        b'P' => Request::CursorStore {
+            blob: take_bytes(&mut cur)?,
+        },
+        b'G' => Request::CursorTake {
+            token: String::from_utf8(take_bytes(&mut cur)?)?,
+        },
         other => bail!("unknown request tag {other}"),
     })
 }
@@ -321,6 +340,12 @@ mod tests {
         roundtrip(Request::Status);
         roundtrip(Request::Watch);
         roundtrip(Request::Shutdown);
+        roundtrip(Request::CursorStore {
+            blob: vec![0, 1, 2, 255],
+        });
+        roundtrip(Request::CursorTake {
+            token: "0000abcd5".to_string(),
+        });
     }
 
     #[test]

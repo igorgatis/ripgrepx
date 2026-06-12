@@ -1,14 +1,13 @@
-//! Opaque pagination cursor for the compact view. A cursor is a base64url blob the caller echoes
-//! back; it carries the entire query (pattern + options) plus a keyset resume position, so page N is
-//! provably the same search as page 1 (no flag can be dropped between pages) and a changed result set
-//! is detectable via the stored fingerprint. Encoding mirrors the hand-rolled, length-prefixed style
-//! in `proto` and reuses its exact options bit-layout.
+//! Opaque pagination cursor for the compact view. A cursor carries the entire query (pattern +
+//! options) plus a keyset resume position, so page N is provably the same search as page 1 (no flag
+//! can be dropped between pages) and a changed result set is detectable via the stored fingerprint.
+//! The encoded blob is parked in the daemon's [`crate::pagination`] store, which hands the caller a
+//! short token to echo back, so the blob itself never has to be small or text-safe. Encoding mirrors
+//! the hand-rolled, length-prefixed style in `proto` and reuses its exact options bit-layout.
 
 use std::hash::Hasher;
 
 use anyhow::{Result, bail};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rustc_hash::FxHasher;
 
 use crate::confirm::SearchOptions;
@@ -59,7 +58,7 @@ pub fn fingerprint<'a>(keys: impl Iterator<Item = (&'a str, u64)>) -> u64 {
     h.finish()
 }
 
-pub fn encode(c: &Cursor) -> String {
+pub fn encode(c: &Cursor) -> Vec<u8> {
     let mode = match c.mode {
         Mode::Matches => 0,
         Mode::Files => 1,
@@ -75,14 +74,11 @@ pub fn encode(c: &Cursor) -> String {
     put_opt(&mut b, c.last_path.as_deref());
     put_opt(&mut b, c.root_hint.as_deref());
     put_bytes(&mut b, c.pattern.as_bytes());
-    URL_SAFE_NO_PAD.encode(&b)
+    b
 }
 
-pub fn decode(s: &str) -> Result<Cursor> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(s.trim())
-        .map_err(|_| anyhow::anyhow!("not a valid cursor"))?;
-    let mut cur = &bytes[..];
+pub fn decode(bytes: &[u8]) -> Result<Cursor> {
+    let mut cur = bytes;
     if take_u8(&mut cur)? != KIND {
         bail!("not an rgx cursor");
     }
@@ -219,14 +215,13 @@ mod tests {
 
     #[test]
     fn decode_rejects_garbage() {
-        assert!(decode("not a cursor!!!").is_err());
-        assert!(decode("").is_err());
+        assert!(decode(b"not a cursor").is_err());
+        assert!(decode(b"").is_err());
     }
 
     #[test]
     fn decode_rejects_wrong_kind() {
-        let bad = URL_SAFE_NO_PAD.encode([0x02, VERSION, 0]);
-        assert!(decode(&bad).is_err());
+        assert!(decode(&[0x02, VERSION, 0]).is_err());
     }
 
     #[test]

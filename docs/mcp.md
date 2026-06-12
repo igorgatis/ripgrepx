@@ -60,10 +60,11 @@ The skill text is version-controlled in [`assets/skill.md`](../assets/skill.md).
   how much it has not seen; a trailing hint carries the cursor for the next page when one exists.
 - File search returns a `[files X-Y of N]` header then one path per line, with a trailing `after` hint
   when more remain.
-- **Paging:** results are paged via an **opaque cursor** the agent echoes back — the cursor carries the
+- **Paging:** results are paged via an **opaque cursor** the agent echoes back — the cursor records the
   exact query and a keyset resume position, so the next page can't drift to a different search, and a
-  result set that changed between pages is reported with a `note:` line. Paging is cheap (the index is
-  warm); nothing is dropped, so every match is reachable.
+  result set that changed between pages is reported with a `note:` line. The cursor is a short id the
+  daemon holds for ~2 min and is single-use; an expired one returns `pagination expired — re-run the
+  search`. Paging is cheap (the index is warm); nothing is dropped, so every match is reachable.
 - **Freshness inline, only when actionable:** if a returned line no longer matches what's on disk,
   it's flagged so the agent re-reads that file rather than trusting stale text.
 

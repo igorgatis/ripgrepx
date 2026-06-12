@@ -515,6 +515,10 @@ fn compact_cmd(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
+    // The cursor blob lives in the cwd's daemon (the pagination home), keyed by the printed token.
+    // Resuming from the same directory finds it; from elsewhere it cleanly misses.
+    let cwd = resolve_root(None);
+
     // Resume from the cursor (which carries the whole query) when given, else build a fresh query
     // from the flags + positionals. `prev` is the (total, fingerprint) at mint time, for the
     // staleness check below.
@@ -530,7 +534,18 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             eprintln!("rgx: --cursor is self-contained; don't combine it with a pattern or flags");
             return ExitCode::from(2);
         }
-        let c = match cursor::decode(tok) {
+        let blob = match rgx::client::take_cursor(&cwd, tok) {
+            Ok(Some(blob)) => blob,
+            Ok(None) => {
+                eprintln!("rgx: pagination expired — re-run the search");
+                return ExitCode::from(2);
+            }
+            Err(e) => {
+                eprintln!("rgx: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let c = match cursor::decode(&blob) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("rgx: invalid --cursor ({e})");
@@ -595,13 +610,17 @@ fn compact_cmd(args: &[String]) -> ExitCode {
     }
     // Carry the original positional scope (a short relative path, or None for the cwd) rather than the
     // resolved absolute root: the caller pages from the same directory, so it re-resolves the same
-    // tree and the cursor stays small. `root_hint` is already that scope from the branches above.
+    // tree. `root_hint` is already that scope from the branches above. Park the blob in the cwd daemon
+    // and print its short token.
     if let Some(next) = page.next_cursor(mode, pattern, opts, page_size, root_hint) {
-        let _ = writeln!(
-            out,
-            "next: rgx --compact --cursor {}",
-            shell_quote(&cursor::encode(&next))
-        );
+        match rgx::client::store_cursor(&cwd, cursor::encode(&next)) {
+            Ok(token) => {
+                let _ = writeln!(out, "next: rgx --compact --cursor {}", shell_quote(&token));
+            }
+            Err(e) => {
+                let _ = writeln!(out, "note: could not store pagination cursor ({e})");
+            }
+        }
     }
     let empty = match mode {
         Mode::Matches => page.total_matches == 0,

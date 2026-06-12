@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use notify_debouncer_full::new_debouncer;
@@ -17,6 +17,7 @@ use notify_debouncer_full::notify::RecursiveMode;
 use crate::config::Config;
 use crate::confirm::SearchOptions;
 use crate::index::{self, Index};
+use crate::pagination::{self, PaginationStore};
 use crate::paths;
 use crate::proto::{self, Request};
 use crate::transport::{self, Stream};
@@ -54,6 +55,9 @@ struct Shared {
     /// watch) keeps the idle reaper from exiting. Held via [`ActiveRequest`] so a panicking handler
     /// can't leak the count.
     in_flight: AtomicUsize,
+    /// Short-lived store mapping pagination tokens to cursor blobs, so the printed `--cursor` is a
+    /// tiny id instead of a base64 blob.
+    pagination: Mutex<PaginationStore>,
 }
 
 /// Marks a request in flight for its whole lifetime. Drop decrements and stamps `last_active`, so the
@@ -97,6 +101,12 @@ impl Shared {
         self.seq_cv.notify_all();
     }
 
+    /// The pagination store, recovering a poisoned lock (the store is best-effort: a lost token just
+    /// makes the client re-run its search).
+    fn pagination(&self) -> std::sync::MutexGuard<'_, PaginationStore> {
+        self.pagination.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Reset the idle clock to now.
     fn touch(&self) {
         *self.last_active.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
@@ -127,6 +137,14 @@ impl Shared {
     }
 }
 
+/// A per-process seed stamped onto pagination tokens so a restarted daemon's old tokens miss cleanly.
+fn session_seed() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
 /// Run the daemon for `root` in the foreground. Returns once the socket can't be owned (another
 /// daemon is already running) or on a fatal error.
 pub fn run(root: PathBuf) -> Result<()> {
@@ -153,6 +171,10 @@ pub fn run(root: PathBuf) -> Result<()> {
         idle_timeout: cfg.idle_timeout(),
         last_active: Mutex::new(Instant::now()),
         in_flight: AtomicUsize::new(0),
+        pagination: Mutex::new(PaginationStore::new(
+            session_seed(),
+            pagination::DEFAULT_TTL,
+        )),
     });
 
     spawn_indexer(shared.clone());
@@ -294,6 +316,15 @@ fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
             let _ = proto::end_stream(&mut conn);
             transport::cleanup(&shared.root);
             std::process::exit(0);
+        }
+        Request::CursorStore { blob } => {
+            let token = shared.pagination().store(blob, Instant::now());
+            let _ = proto::write_data(&mut conn, token.as_bytes());
+        }
+        Request::CursorTake { token } => {
+            // An empty reply means "expired or already used"; the client re-runs the search.
+            let blob = shared.pagination().take(&token, Instant::now());
+            let _ = proto::write_data(&mut conn, &blob.unwrap_or_default());
         }
     }
     let _ = proto::end_stream(&mut conn);

@@ -51,9 +51,10 @@ rgx --compact -c <pattern>                # per-file match counts (how many?)
   once) and **paged**, which is far cheaper on tokens than a raw dump.
 - The header is `[matches 1-50 of 421 in 88 files]`, so you always know how much you have **not** seen
   — don't treat the first page as the whole answer. When more remain, the footer prints the exact next
-  command: `next: rgx --compact --cursor '<token>'`. The cursor carries the whole query (pattern +
+  command: `next: rgx --compact --cursor '<token>'`. The cursor records the whole query (pattern +
   every flag), so the next page is the same search; if the result set changed between pages, rgx prints
-  a `note:` line.
+  a `note:` line. The token is a short, single-use id the daemon holds for ~2 min — run it from the
+  same directory; if it expires you get `pagination expired — re-run the search`, so just re-run.
 - **Orient before paging:** for "which files" use `-l`; for "how many per file" use `-c`. One call,
   no page-walk.
 - **Paging is cheap** — the index is warm. Narrow the pattern or `path` when you can, but when results

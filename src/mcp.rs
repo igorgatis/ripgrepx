@@ -77,7 +77,14 @@ fn handle_tool_call(id: Value, msg: &Value, root: &Path) -> String {
         Some("content_search") => {
             // A cursor carries the entire query + resume position, so it supersedes the other args.
             let query = if let Some(tok) = arg_str(args, "cursor") {
-                match cursor::decode(tok) {
+                let blob = match client::take_cursor(root, tok) {
+                    Ok(Some(blob)) => blob,
+                    Ok(None) => {
+                        return error(id, -32602, "pagination expired — re-run the search");
+                    }
+                    Err(e) => return error(id, -32603, &format!("{e}")),
+                };
+                match cursor::decode(&blob) {
                     Ok(c) => Query {
                         start_after: c.last_path.clone().map(|p| (p, c.last_lineno)),
                         prev: Some((c.prev_total, c.fingerprint)),
@@ -180,10 +187,12 @@ fn compact_search(root: &Path, q: Query) -> String {
         text.push_str(&format!("\nnote: {note}"));
     }
     // root_hint is None: the MCP server root is authoritative, so the cursor never carries a path.
-    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None) {
+    // The blob is parked in this root's daemon; the agent echoes back the short token.
+    if let Some(next) = p.next_cursor(q.mode, q.pattern, q.opts, q.page_size, None)
+        && let Ok(token) = client::store_cursor(root, cursor::encode(&next))
+    {
         text.push_str(&format!(
-            "\n(more: call content_search with cursor: \"{}\")",
-            cursor::encode(&next)
+            "\n(more: call content_search with cursor: \"{token}\")"
         ));
     }
     text

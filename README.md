@@ -97,12 +97,14 @@ src/server.rs
   210: fn content_search(...) -> Result<()> {
 src/main.rs
   168: fn content_cmd(args: &[String]) -> ExitCode {
-next: rgx --compact --cursor 'AQEAAAAAAA...'
+next: rgx --compact --cursor '9d13ff881'
 ```
 
-The cursor carries the entire query (pattern + every flag) plus a keyset resume position, so the next
+The cursor records the entire query (pattern + every flag) plus a keyset resume position, so the next
 page is always the same search — never a different one — and a result set that changed between pages
-is flagged with a `note:` line.
+is flagged with a `note:` line. The token you echo back is a short id: the daemon parks the cursor for
+a couple of minutes and hands you the id in its place. It's single-use; if it expires (or the daemon
+was stopped) you get `pagination expired — re-run the search`.
 
 ### MCP or CLI
 

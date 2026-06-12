@@ -44,11 +44,13 @@ a denser view):
 - **Header reports the totals** — `[matches 1-50 of 421 in 88 files]`, so you always know how much you
   have *not* seen.
 - **Paged by an opaque cursor** — a page of matches at a time; when more remain the footer prints the
-  exact next command (`next: rgx --compact --cursor '<token>'`). The cursor carries the entire query
+  exact next command (`next: rgx --compact --cursor '<token>'`). The cursor records the entire query
   (pattern + every flag) plus a keyset resume position, so the next page can't drift to a different
-  search and a result set that changed between pages is reported with a `note:` line. To stay small it
-  stores the query's path scope *relative to the cwd*, so follow the cursor from the same directory.
-  Set the page size with `--page-size N` (default 50).
+  search and a result set that changed between pages is reported with a `note:` line. The token itself
+  is a short id: the daemon parks the cursor for ~2 minutes and hands you the id in its place, so it's
+  tiny. Follow it from the same directory; it's single-use, and if it expires (or the daemon was
+  stopped) you get `pagination expired — re-run the search`. Set the page size with `--page-size N`
+  (default 50).
 - **Orientation modes** — `-l` / `--files-with-matches` lists matching paths only; `-c` / `--count`
   lists `path:count` per file. Both answer "where / how many" in one call instead of a page-walk, and
   both page the same way (by file).
