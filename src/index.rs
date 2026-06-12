@@ -382,7 +382,7 @@ fn read_u64(r: &mut impl Read) -> std::io::Result<u64> {
 /// global gitignore; read parent ignores; don't follow symlinks); the one thing the `rg` binary adds
 /// on top of the crate is the `.rgignore` custom ignore name. Both the index walk and the `full_scan`
 /// fallback go through here so they can't drift from `rg` — or from each other. See
-/// `docs/ripgrep-ignore-and-scope.md`.
+/// `docs/indexing.md` (What the walk includes).
 pub fn walk_builder(root: &Path) -> WalkBuilder {
     let mut b = WalkBuilder::new(root);
     b.add_custom_ignore_filename(".rgignore");

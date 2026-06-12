@@ -91,6 +91,12 @@ in a project `.toml` the user edits directly — there is no config-editing CLI.
 - **Headline command list.** Whether the `--server` and `--agent` subcommands belong in the primary
   help output or stay behind their own `--help` (currently the top-level help lists them with a
   pointer to `rgx --server --help` / `rgx --agent --help`).
+- **One index per repo vs. per directory.** Each search currently roots its index at the path it
+  searches, so visiting several subdirectories of a repo builds several overlapping indexes (correct,
+  just duplicated work). Rooting one index at the git repo root and scoping each query to its subtree
+  would share it — but ripgrep's explicit-path exemption (a named path under an ignored dir is still
+  searched) means such reuse must fall back to a direct scan in those cases to stay byte-for-byte
+  `rg`. See the walk-parity notes in [`indexing.md`](indexing.md).
 
 (Storage is settled — an in-RAM trigram index with a versioned on-disk snapshot; see
 [`index-and-storage.md`](index-and-storage.md). It's an implementation detail that doesn't affect the

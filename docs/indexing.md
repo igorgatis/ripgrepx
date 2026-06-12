@@ -25,13 +25,36 @@ Indexing a cold or large repo must never block searching:
 - **Incremental updates.** File changes are picked up as they happen. A single save lands almost
   immediately; a burst (branch switch, save-all) is coalesced into one quick update instead of
   reacting per file.
-- **gitignore-aware.** The walk honors `.gitignore`, with a config escape hatch to force-include
-  paths that would otherwise be dropped (e.g. a generated directory you want searchable).
+- **Ignore-aware, exactly like `rg`.** The walk yields the same files ripgrep would — see
+  [What the walk includes](#what-the-walk-includes--ripgrep-parity). A config escape hatch can
+  force-include paths that would otherwise be dropped (e.g. a generated directory you want searchable).
 - **Verified at query time.** Because ripgrep reads the real files, a result is always confirmed
   against current disk contents; when the index and disk disagree, that's surfaced as a freshness
   flag rather than silently returning stale text.
 - **Config reconciles.** Changing index config (size limits, include rules) can change which files
   are candidates; rgx reconciles rather than silently keeping the old rules.
+
+## What the walk includes — ripgrep parity
+
+The candidate walk must yield **exactly** the files `rg` would for the same invocation: confirm
+searches that file list directly without re-applying ignore rules, so an extra file becomes a phantom
+match and a missing one drops a real match. rgx walks with ripgrep's own `ignore` crate at its
+defaults — which already match `rg` (skip hidden files; honor `.gitignore`, `.ignore`,
+`.git/info/exclude` and the global gitignore; read parent ignore files; don't follow symlinks) — plus
+the one thing the `rg` binary adds on top, the `.rgignore` custom ignore name. This lives in one place
+(`index::walk_builder`) so the index walk and the fallback scan can't drift from `rg` or each other.
+
+Two ripgrep rules are worth stating, because they shape any future "share one index across
+subdirectories" work (see [`design.md`](design.md) open questions):
+
+- **`.gitignore` is inert without a `.git` (or `.jj`).** In a plain directory a `.gitignore` does
+  nothing; the git directory both *activates* the gitignore stack and is the boundary the upward walk
+  for parent ignores stops at. A repo's index is therefore naturally rooted at its git root.
+- **An explicitly named path is exempt from ignore/hidden rules.** `rg PATTERN build/` searches a
+  gitignored `build/`, and `rg` run from inside `node_modules/` searches it — ripgrep applies ignore
+  rules only to entries it discovers by *descending*, never to the roots you hand it.
+
+Behavior is pinned to ripgrep's `ignore` 0.4.x; if that crate is bumped, re-verify against `rg`.
 
 ## Self-managing
 
