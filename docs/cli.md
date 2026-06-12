@@ -102,8 +102,13 @@ rgx -- --server        # everything after -- is positional
 
 ## Notes
 
-- Settings live in a project `.toml` you edit directly; there is no config-editing CLI. The indexer
-  reloads its config without a restart.
+- Settings live in an optional user TOML you edit directly; there is no config-editing CLI. It is
+  read from `$RGX_CONFIG`, else `$XDG_CONFIG_HOME/rgx/config.toml`, else `~/.config/rgx/config.toml`.
+  A missing file is fine; a malformed or invalid one is a hard error. Config is read once at process
+  start, so after editing, stop the daemon (`rgx --server stop`); the next search respawns it with
+  the new config. Keys:
+  - `cache_dir` — base directory for the rebuildable cache (index + socket). Must be an absolute
+    path. `$RGX_CACHE_DIR` overrides it.
 - The background indexer **starts on first use**, so you rarely need `--server start`/`stop`
   directly; they exist for explicit control (CI, scripted warm-up, teardown).
 - `--find` reports the true total (`[files 1-1000 of N]`) and never silently truncates: when more

@@ -103,9 +103,20 @@ is flagged with a `note:` line.
   faster. A bare `rgx <pattern>` is plain (accelerated) ripgrep; `rgx --find <name>` locates files; `--server`
   manages the daemon. See [`docs/cli.md`](docs/cli.md).
 
-State (index + daemon socket) lives outside the repo under `$RGX_CACHE_DIR`, else
-`$XDG_CACHE_HOME/rgx`, else `~/.cache/rgx` — a rebuildable cache, safe to delete, never written into
-the indexed tree.
+State (index + daemon socket) lives outside the repo under `$RGX_CACHE_DIR`, else the config file's
+`cache_dir`, else `$XDG_CACHE_HOME/rgx`, else `~/.cache/rgx` — a rebuildable cache, safe to delete,
+never written into the indexed tree.
+
+### Config
+
+Optional TOML at `$RGX_CONFIG`, else `$XDG_CONFIG_HOME/rgx/config.toml`, else
+`~/.config/rgx/config.toml`. A missing file is fine; a malformed or invalid one is an error.
+
+```toml
+# Base directory for the rebuildable cache (index + socket). $RGX_CACHE_DIR overrides this.
+# Must be an absolute path (no ~ expansion).
+cache_dir = "/var/tmp/rgx-cache"
+```
 
 ## Benchmarks
 

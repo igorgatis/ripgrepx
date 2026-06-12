@@ -16,6 +16,7 @@ use anyhow::Result;
 
 pub mod client;
 pub mod compact;
+pub mod config;
 pub mod confirm;
 pub mod cursor;
 pub mod index;

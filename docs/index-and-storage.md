@@ -165,9 +165,10 @@ The resident index is the in-RAM structure above (`FxHashMap<trigram, RoaringBit
 It is persisted to a **single versioned snapshot file** so the daemon warm-starts instantly instead of
 re-walking:
 
-- Location: `$RGX_CACHE_DIR/<hash>/index.bin` if set, else `$XDG_CACHE_HOME/rgx/<hash>/index.bin`,
-  else `~/.cache/rgx/<hash>/index.bin`, keyed by the canonicalized root — **never written into the
-  indexed repo**. `$RGX_CACHE_DIR` relocates only rgx's state (unlike the shared `$XDG_CACHE_HOME`).
+- Location: `$RGX_CACHE_DIR/<hash>/index.bin` if set, else the config file's `cache_dir/<hash>/...`,
+  else `$XDG_CACHE_HOME/rgx/<hash>/index.bin`, else `~/.cache/rgx/<hash>/index.bin`, keyed by the
+  canonicalized root — **never written into the indexed repo**. `$RGX_CACHE_DIR` and `cache_dir`
+  relocate only rgx's state (unlike the shared `$XDG_CACHE_HOME`).
 - Format: a magic + version header (`RGXIDX01`), the file table, then per-trigram roaring postings.
   Saved atomically (temp file + rename). On load, postings whose file IDs fall outside the table are
   rejected (corrupt/foreign snapshot ⇒ rebuild rather than risk a bad candidate).

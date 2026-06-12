@@ -80,7 +80,7 @@ first token. Examples:
 
 SERVER — the indexer starts on first use and stays fresh on its own; subcommands act on the cwd's
 project. `status` reports readiness/counts/age, `watch` repaints live. Index + socket live under
-$RGX_CACHE_DIR (else ~/.cache/rgx): a rebuildable cache, safe to delete.
+$RGX_CACHE_DIR (else config `cache_dir`, else ~/.cache/rgx): a rebuildable cache, safe to delete.
 
 FOR AI AGENTS — works with Claude Code, Codex, and any MCP client; see `rgx --agent --help`.
   Compaction — `--compact` groups matches by file, pages behind an opaque cursor, trims long lines.
@@ -104,8 +104,8 @@ indexer also starts on first search, so you rarely manage it by hand.
   rgx --server status   one-shot: readiness, file/trigram counts, memory, last-sync age
   rgx --server watch    live status, repaints on every change until interrupted
 
-Index + socket live under $RGX_CACHE_DIR (else $XDG_CACHE_HOME/rgx, else ~/.cache/rgx): a rebuildable
-cache, safe to delete, never written into the indexed tree.
+Index + socket live under $RGX_CACHE_DIR (else config `cache_dir`, else $XDG_CACHE_HOME/rgx, else
+~/.cache/rgx): a rebuildable cache, safe to delete, never written into the indexed tree.
 ";
 
 /// `rgx --agent --help` (or `--help --agent`): the AI-agent surface, with setup for the common hosts.
