@@ -9,23 +9,25 @@ binary installed** — just `rgx`.
 
 ## Setup
 
-Register `rgx --agent mcp` as a stdio MCP server with your agent:
+Register `rgx --agent mcp` as a stdio MCP server with your agent (recommended setup per agent):
 
 ```sh
-# Claude Code
-claude mcp add rgx -- rgx --agent mcp
+claude mcp add rgx -- rgx --agent mcp                                              # Claude Code
+codex mcp add rgx -- rgx --agent mcp                                               # Codex
+gemini mcp add rgx rgx --agent mcp                                                 # Gemini CLI
+code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'           # VS Code (Copilot)
+```
+
+```jsonc
+// Cursor (~/.cursor/mcp.json or .cursor/mcp.json), Windsurf, and most MCP clients:
+{ "mcpServers": { "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } } }
 ```
 
 ```toml
-# Codex — ~/.codex/config.toml
+# Codex — if you prefer editing ~/.codex/config.toml over `codex mcp add`:
 [mcp_servers.rgx]
 command = "rgx"
 args = ["--agent", "mcp"]
-```
-
-```json
-// Any other MCP client — add to its config
-{ "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } }
 ```
 
 The MCP server keys off the working directory it's launched in, so run it from (or point it at) the

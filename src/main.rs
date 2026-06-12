@@ -121,17 +121,17 @@ rgx --agent — integrate rgx with AI coding agents (Claude Code, Codex, or any 
   rgx --agent skill     print the agent skill (teaches a model to prefer rgx over rg/grep/find/fd)
   rgx --agent install   install the skill into ~/.claude/skills (or $RGX_SKILL_DIR) + print MCP setup
 
-MCP setup — register `rgx --agent mcp` as a stdio server:
+MCP setup — register `rgx --agent mcp` as a stdio server (content_search, file_search, status):
   Claude Code   claude mcp add rgx -- rgx --agent mcp
-  Codex         add to ~/.codex/config.toml:
-                  [mcp_servers.rgx]
-                  command = \"rgx\"
-                  args = [\"--agent\", \"mcp\"]
-  Other clients add to the client's MCP config:
-                  \"rgx\": { \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] }
+  Codex         codex mcp add rgx -- rgx --agent mcp
+  Gemini CLI    gemini mcp add rgx rgx --agent mcp
+  VS Code       code --add-mcp '{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}'
+  Cursor/other  add to the client's MCP config (e.g. .cursor/mcp.json):
+                  \"mcpServers\": { \"rgx\": { \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] } }
 
 Skill — `rgx --agent skill` is plain markdown. Claude Code loads it from ~/.claude/skills/rgx/SKILL.md
-(what `install` writes); for Codex or others, paste it into AGENTS.md or your agent's instructions.
+(what `install` writes); for Codex/Gemini/Cursor/others, append it to AGENTS.md / GEMINI.md / the
+agent's rules/instructions file.
 ";
 
 fn server_cmd(rest: &[String]) -> ExitCode {

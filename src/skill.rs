@@ -46,11 +46,13 @@ fn skill_path() -> Option<PathBuf> {
 
 fn print_mcp_instructions() {
     println!(
-        "\nTo expose rgx to agents over MCP, register `rgx --agent mcp` as a stdio server:\n\
+        "\nTo expose rgx to agents over MCP, register `rgx --agent mcp` as a stdio server\n\
+         (content_search, file_search, status):\n\
          \n  Claude Code:  claude mcp add rgx -- rgx --agent mcp\n\
-         \n  Codex (~/.codex/config.toml):\n\
-         \n      [mcp_servers.rgx]\n      command = \"rgx\"\n      args = [\"--agent\", \"mcp\"]\n\
-         \n  Other MCP clients:  \"rgx\": {{ \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] }}\n\
-         \nThe MCP server exposes content_search, file_search, and status tools."
+         \n  Codex:        codex mcp add rgx -- rgx --agent mcp\n\
+         \n  Gemini CLI:   gemini mcp add rgx rgx --agent mcp\n\
+         \n  VS Code:      code --add-mcp '{{\"name\":\"rgx\",\"command\":\"rgx\",\"args\":[\"--agent\",\"mcp\"]}}'\n\
+         \n  Cursor/other: add to the client's MCP config (e.g. .cursor/mcp.json):\n\
+         \n      \"mcpServers\": {{ \"rgx\": {{ \"command\": \"rgx\", \"args\": [\"--agent\", \"mcp\"] }} }}"
     );
 }

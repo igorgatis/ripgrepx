@@ -9,7 +9,7 @@ readme = "README.md"
 keywords = ["ripgrep", "grep", "search", "code-search", "mcp"]
 categories = ["command-line-utilities", "development-tools"]
 # Keep the published crate to the Rust sources + the embedded skill; packaging/CI live in the repo only.
-exclude = ["/npm", "/bench", "/docs", "/.github", "/mise.toml", "/pyproject.toml"]
+exclude = ["/npm", "/bench", "/docs", "/.github", "/mise.toml", "/pyproject.toml", "/install.sh"]
 
 # `cargo binstall ripgrepx` pulls the prebuilt release archive instead of compiling.
 [package.metadata.binstall]

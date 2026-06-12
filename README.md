@@ -1,70 +1,80 @@
 # ripgrepx (`rgx`)
 
+[![CI](https://github.com/igorgatis/ripgrepx/actions/workflows/ci.yml/badge.svg)](https://github.com/igorgatis/ripgrepx/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ripgrepx.svg)](https://pypi.org/project/ripgrepx/)
+[![npm](https://img.shields.io/npm/v/ripgrepx.svg)](https://www.npmjs.com/package/ripgrepx)
+[![crates.io](https://img.shields.io/crates/v/ripgrepx.svg)](https://crates.io/crates/ripgrepx)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Instant ripgrep for codebases you search over and over.**
 
-`rgx` keeps a fresh index of which files contain what, so each search jumps straight to the candidate
-files — but **ripgrep still does the matching**, so results are byte-for-byte `rg`'s, just faster. A
-stale index can only cost a little speed, never a missed or invented match. It searches content (full
+`rgx` is [ripgrep](https://github.com/BurntSushi/ripgrep)'s matcher fronted by a [Russ Cox–style
+trigram index](https://swtch.com/~rsc/regexp/regexp4.html) — the candidate-index idea behind Google
+Code Search and [`zoekt`](https://github.com/sourcegraph/zoekt). The index narrows *which* files to
+scan; **ripgrep still does the matching**, so results are byte-for-byte `rg`'s, just faster. A stale
+index can only cost a little speed, never a missed or invented match. It searches content (full
 ripgrep regex) and locates files by name (find/fd-style), from the terminal or an AI agent over MCP.
 
 Warm, `rgx` answers most queries in well under 60 ms where `rg` takes 100 ms to 2.5 s — a **15–50×**
 speedup on the kind of symbol searches a developer actually runs, up to **128×** on the most
 selective. See the [benchmarks](#benchmarks) for the full numbers.
 
+## Install
+
+`rgx` is one self-contained ~4 MB binary — ripgrep's engine is linked in, so you do **not** need `rg`
+installed. Pick whichever channel you prefer:
+
+```sh
+# curl | sh — prebuilt binary, no toolchain (macOS/Linux; re-run to update)
+curl -fsSL https://raw.githubusercontent.com/igorgatis/ripgrepx/main/install.sh | sh
+
+# npm — fetches the right prebuilt binary
+npm install -g ripgrepx
+
+# pipx (or pip) — prebuilt wheel that bundles the binary
+pipx install ripgrepx
+
+# Cargo — prebuilt via binstall, or compiled from source
+cargo binstall ripgrepx
+cargo install ripgrepx
+```
+
+Or download a prebuilt archive (Windows included) from the
+[latest release](https://github.com/igorgatis/ripgrepx/releases/latest) and put `rgx` on your `PATH`.
+On **Windows**, use npm, pipx, Cargo, or the release `.zip` (`x86_64-pc-windows-msvc` /
+`aarch64-pc-windows-msvc`).
+
 ## For AI agents
 
 `rgx` is built first for AI coding agents: fast, token-frugal code search an agent calls over **MCP**
-or as a **CLI**. It is self-contained — ripgrep's engine is linked in, so you do **not** need `rg`
-installed.
+or as a **CLI**. After installing the binary above, wire it into your agent in two steps.
 
-### Install
+**1. Teach the agent** to prefer rgx over rg/grep/find/fd. For Claude Code, `rgx --agent install`
+writes the skill to `~/.claude/skills/rgx/SKILL.md`; for any other agent, `rgx --agent skill` prints
+the same markdown — append it to that agent's instructions/rules file.
 
-**1. Install rgx** — easiest via npm, which fetches the right prebuilt binary:
+**2. (optional) Register the MCP server** — exposes `content_search`, `file_search`, and `status` as
+tools. The recommended setup per agent:
 
-```sh
-npm install -g ripgrepx        # installs the `rgx` command
-```
+| Agent | Teach the agent (skill / rules) | Register the MCP server |
+| --- | --- | --- |
+| **Claude Code** | `rgx --agent install` | `claude mcp add rgx -- rgx --agent mcp` |
+| **Codex** | `rgx --agent skill >> AGENTS.md` | `codex mcp add rgx -- rgx --agent mcp` |
+| **Cursor** | `rgx --agent skill > .cursor/rules/rgx.md` | add the JSON below to `.cursor/mcp.json` |
+| **Gemini CLI** | `rgx --agent skill >> GEMINI.md` | `gemini mcp add rgx rgx --agent mcp` |
+| **VS Code (Copilot)** | `rgx --agent skill >> .github/copilot-instructions.md` | `code --add-mcp '{"name":"rgx","command":"rgx","args":["--agent","mcp"]}'` |
+| **Any MCP client** | paste `rgx --agent skill` into its instructions | the JSON below |
 
-Or grab the self-contained ~4 MB binary (ripgrep linked in, no deps) straight from the
-[latest release](https://github.com/igorgatis/ripgrepx/releases/latest):
-
-```sh
-# macOS / Linux: pick your target, extract, and put rgx on your PATH
-VER=v0.1.0
-TARGET=aarch64-apple-darwin   # or: x86_64-apple-darwin, x86_64-unknown-linux-gnu,
-                              #     aarch64-unknown-linux-gnu, x86_64-unknown-linux-musl
-curl -fsSL "https://github.com/igorgatis/ripgrepx/releases/download/$VER/rgx-$VER-$TARGET.tar.gz" \
-  | tar xz && install -m755 rgx ~/.local/bin/rgx
-```
-
-On **Windows**, `npm install -g ripgrepx`, or download `rgx-v0.1.0-x86_64-pc-windows-msvc.zip`
-(or `aarch64-…`) from the release and put `rgx.exe` on your `PATH`.
-
-**2. Teach your agent** to prefer rgx over rg/grep/find/fd. `rgx --agent install` writes the skill to
-`~/.claude/skills/rgx/SKILL.md` and prints the MCP setup; `rgx --agent skill` just prints the skill
-markdown (for Codex `AGENTS.md` or any other agent's instructions):
-
-```sh
-rgx --agent install
-```
-
-**3. (optional) Register the MCP server** (`content_search`, `file_search`, `status`):
-
-```sh
-# Claude Code
-claude mcp add rgx -- rgx --agent mcp
+```jsonc
+// Cursor (~/.cursor/mcp.json or .cursor/mcp.json), Windsurf, and most MCP clients:
+{ "mcpServers": { "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } } }
 ```
 
 ```toml
-# Codex — add to ~/.codex/config.toml
+# Codex — if you prefer editing ~/.codex/config.toml over `codex mcp add`:
 [mcp_servers.rgx]
 command = "rgx"
 args = ["--agent", "mcp"]
-```
-
-```json
-// Any other MCP client — add to its config
-{ "rgx": { "command": "rgx", "args": ["--agent", "mcp"] } }
 ```
 
 ### Token savings (`--compact`)
