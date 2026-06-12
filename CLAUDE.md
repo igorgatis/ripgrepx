@@ -19,23 +19,24 @@ ripgrep does the matching. Correctness is ripgrep's, speed is ours.
 Tooling is managed by [mise](https://mise.jdx.dev). Run via `mise run <task>`:
 
 - `mise run build:install` — build release and install rgx to `~/.local/bin`
+- `mise run run -- <args>` — run rgx with the given args
 - `mise run clean` — remove build artifacts and all untracked/ignored files
 - `mise run test` — run tests
 - `mise run fmt` / `fmt-check` — format / check formatting
 - `mise run lint` — clippy, warnings as errors
+- `mise run fix` — auto-fix clippy lints and formatting
 - `mise run ci` — fmt-check + lint + test
+
+After `build:install`, kill stale daemons (`pkill -f 'rgx.*server'`) — an old daemon keeps serving the
+previous wire format and returns wrong or empty results.
 
 ## Conventions
 
-- **Testable from conception.** Design every component to be tested in isolation — favor pure
-  functions, dependency injection over globals, and seams that let the indexer, candidate selection,
-  and ripgrep invocation be exercised without a live filesystem or daemon. Write the test alongside
-  the code, not after.
-- **Keep docs in sync.** Treat `docs/`, `README.md`, and this file as part of the change: before
-  committing anything that alters behavior, the command surface, or the design, update the relevant
-  doc in the same commit. Docs must never describe a state the code isn't in.
-- **Keep the agent skill in sync.** The skill installed by `rgx --agent install` is the version-controlled
-  [`assets/skill.md`](assets/skill.md) (embedded at build time). It is agent-facing documentation of
-  the command surface and behavior, so the same rule as docs applies: any change to flags, the
-  command surface, output shape, or freshness/MCP behavior must update `assets/skill.md` in the same
-  commit. The skill must never teach agents a usage the code doesn't support.
+- **Trunk-based.** All development happens on `main`; commit and push directly there.
+- **Testable from conception.** Test components in isolation — pure functions, dependency injection
+  over globals, seams that exercise the indexer, candidate selection, and ripgrep invocation without a
+  live filesystem or daemon. Write the test alongside the code.
+- **Docs and skill move with the code.** Any change to behavior, the command surface, or output shape
+  updates the relevant `docs/`, `README.md`, and [`assets/skill.md`](assets/skill.md) in the same
+  commit. `assets/skill.md` (embedded at build time, installed by `rgx --agent install`) is the
+  agent-facing source of truth — never let docs or skill describe a state the code isn't in.
