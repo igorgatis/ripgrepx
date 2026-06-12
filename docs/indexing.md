@@ -35,6 +35,8 @@ Indexing a cold or large repo must never block searching:
 
 ## Self-managing
 
-The indexer starts on first use, updates itself as files change, reloads config without a restart,
-and cleans up after itself when idle — so `--server start`/`--server stop` are for explicit control,
-not routine use.
+The indexer starts on first use, updates itself as files change, and exits after an idle period
+(default 1 h, `idle_timeout_secs`) to free its RAM — the next search respawns it. A small repo whose
+cold build is cheap (under `persist_threshold_ms`, default 1 s) is kept **RAM-only**: no snapshot is
+written, and each daemon start rebuilds from scratch. So `--server start`/`--server stop` are for
+explicit control, not routine use. Config is read once at startup; restart the daemon to apply edits.

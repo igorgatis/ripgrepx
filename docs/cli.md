@@ -109,8 +109,14 @@ rgx -- --server        # everything after -- is positional
   the new config. Keys:
   - `cache_dir` — base directory for the rebuildable cache (index + socket). Must be an absolute
     path. `$RGX_CACHE_DIR` overrides it.
+  - `persist_threshold_ms` (default `1000`) — persist the index only if the cold build took at least
+    this long; below it the index stays RAM-only and is rebuilt on each daemon start. `0` always
+    persists. See [`index-and-storage.md`](index-and-storage.md#7-storage).
+  - `idle_timeout_secs` (default `3600`) — exit the daemon after this long with no search, freeing
+    its RAM; the next search respawns it. `0` stays resident forever.
 - The background indexer **starts on first use**, so you rarely need `--server start`/`stop`
-  directly; they exist for explicit control (CI, scripted warm-up, teardown).
+  directly; they exist for explicit control (CI, scripted warm-up, teardown). It also exits on its
+  own after `idle_timeout_secs` of no searches.
 - `--find` reports the true total (`[files 1-1000 of N]`) and never silently truncates: when more
   match than the page holds, the footer prints a `next: … --after '<path>'` command (keyset paging).
   Richer file-search options are an open design point — see [`design.md`](design.md#open-questions).

@@ -9,6 +9,8 @@ pub struct Status<'a> {
     pub root: &'a Path,
     pub snapshot: &'a Path,
     pub running: bool,
+    /// The resident index is intentionally not persisted (cheap to rebuild); only set by the daemon.
+    pub ram_only: bool,
     /// "ready" or "building N / M files"; only when the daemon is running.
     pub state: Option<String>,
     pub files: Option<usize>,
@@ -39,6 +41,12 @@ impl Status<'_> {
         }
         if let Some(m) = self.memory_bytes {
             s.push_str(&row("index", &human_bytes(m)));
+        }
+
+        // RAM-only index: there is deliberately no snapshot, so say so instead of "not built yet".
+        if self.ram_only {
+            s.push_str(&row("snapshot", "ram-only (rebuilt on start)"));
+            return s;
         }
 
         // On-disk snapshot: size + last-sync age, then its location — shown even with no daemon.
@@ -119,6 +127,7 @@ mod tests {
             root: Path::new("/repo"),
             snapshot: Path::new("/cache/rgx/abc/index.bin"),
             running: false,
+            ram_only: false,
             state: None,
             files: None,
             trigrams: None,
@@ -128,5 +137,22 @@ mod tests {
         assert!(block.contains("daemon    not running"));
         assert!(block.contains("/cache/rgx/abc/index.bin"));
         assert!(block.contains("not built yet")); // file doesn't exist in test
+    }
+
+    #[test]
+    fn ram_only_status_reports_no_snapshot() {
+        let block = Status {
+            root: Path::new("/repo"),
+            snapshot: Path::new("/cache/rgx/abc/index.bin"),
+            running: true,
+            ram_only: true,
+            state: Some("ready".into()),
+            files: Some(120),
+            trigrams: Some(5000),
+            memory_bytes: Some(1024),
+        }
+        .render();
+        assert!(block.contains("ram-only"));
+        assert!(!block.contains("index.bin"));
     }
 }

@@ -116,6 +116,14 @@ Optional TOML at `$RGX_CONFIG`, else `$XDG_CONFIG_HOME/rgx/config.toml`, else
 # Base directory for the rebuildable cache (index + socket). $RGX_CACHE_DIR overrides this.
 # Must be an absolute path (no ~ expansion).
 cache_dir = "/var/tmp/rgx-cache"
+
+# Persist the index only if the cold build took at least this long; below it the index stays
+# RAM-only and is rebuilt on each daemon start. 0 always persists. Default 1000.
+persist_threshold_ms = 1000
+
+# Exit the daemon after this many seconds with no search, freeing its RAM; the next search
+# respawns it. 0 stays resident forever. Default 3600.
+idle_timeout_secs = 3600
 ```
 
 ## Benchmarks

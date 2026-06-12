@@ -173,6 +173,14 @@ re-walking:
   Saved atomically (temp file + rename). On load, postings whose file IDs fall outside the table are
   rejected (corrupt/foreign snapshot ⇒ rebuild rather than risk a bad candidate).
 - The snapshot is a rebuildable cache: a version mismatch wipes and rebuilds rather than migrating.
+- **RAM-only below a build-time threshold.** A cold build is timed; if it finished faster than
+  `persist_threshold_ms` (config, default 1 s) the snapshot is skipped entirely and the index lives
+  only in RAM, rebuilt on each daemon start. The cutoff is a *build-time* one, not a size one,
+  because build cost tracks bytes scanned, not file count (Lucene's 7.4k large files take longer than
+  VS Code's 15.1k small ones); at the default it lands around VS Code/Kubernetes scale (~30-40 MB
+  index, ~150 MB corpus), so typical project repos stay RAM-only. This also avoids the per-reconcile
+  snapshot rewrite for small, actively-edited trees. `persist_threshold_ms = 0` always persists.
+  Once a snapshot exists, a warm start keeps persisting; delete the cache to re-evaluate.
 
 A general embedded KV store (e.g. `fjall`) or a `zoekt`-style segmented mmap format would matter for a
 much larger corpus or multi-repo scale; at the sizes above the in-RAM index plus snapshot is simpler

@@ -106,6 +106,10 @@ indexer also starts on first search, so you rarely manage it by hand.
 
 Index + socket live under $RGX_CACHE_DIR (else config `cache_dir`, else $XDG_CACHE_HOME/rgx, else
 ~/.cache/rgx): a rebuildable cache, safe to delete, never written into the indexed tree.
+
+The daemon exits after `idle_timeout_secs` of no searches (default 1 h) and respawns on the next one.
+A repo whose cold build is cheap (under `persist_threshold_ms`, default 1 s) is kept in RAM only, with
+no snapshot — `status` shows `ram-only`. Both are configurable; see docs/cli.md.
 ";
 
 /// `rgx --agent --help` (or `--help --agent`): the AI-agent surface, with setup for the common hosts.
@@ -183,6 +187,7 @@ fn server_cmd(rest: &[String]) -> ExitCode {
                     root: &root,
                     snapshot: &snapshot,
                     running: false,
+                    ram_only: false,
                     state: None,
                     files: idx.as_ref().map(rgx::index::Index::file_count),
                     trigrams: idx.as_ref().map(rgx::index::Index::trigram_count),

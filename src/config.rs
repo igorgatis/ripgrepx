@@ -9,17 +9,46 @@ use serde::Deserialize;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::paths::{non_empty, win_var};
+
+/// A cold build faster than this is cheap to redo, so the index is kept RAM-only (no snapshot).
+pub const DEFAULT_PERSIST_THRESHOLD_MS: u64 = 1000;
+
+/// The daemon exits after this long with no client request, freeing its RAM; the next search
+/// respawns it. `0` disables the timeout (stay resident forever).
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 3600;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Base directory for the rebuildable cache (index + socket). `$RGX_CACHE_DIR` overrides this.
     pub cache_dir: Option<PathBuf>,
+    /// Persist the index to disk only if the cold build took at least this many milliseconds; below
+    /// it the index stays RAM-only and is rebuilt on each daemon start. `0` always persists.
+    pub persist_threshold_ms: Option<u64>,
+    /// Exit the daemon after this many seconds with no client request. `0` disables it.
+    pub idle_timeout_secs: Option<u64>,
 }
 
 impl Config {
+    /// Minimum cold-build time that earns an on-disk snapshot.
+    pub fn persist_threshold(&self) -> Duration {
+        Duration::from_millis(
+            self.persist_threshold_ms
+                .unwrap_or(DEFAULT_PERSIST_THRESHOLD_MS),
+        )
+    }
+
+    /// Idle period after which the daemon exits, or `None` when disabled (`0`).
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        match self.idle_timeout_secs.unwrap_or(DEFAULT_IDLE_TIMEOUT_SECS) {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        }
+    }
+
     /// The process-wide config, loaded once from disk.
     pub fn get() -> &'static Config {
         static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -117,6 +146,27 @@ mod tests {
     #[test]
     fn unknown_key_is_error() {
         assert!(parse("nope = 1").is_err());
+    }
+
+    #[test]
+    fn threshold_and_idle_defaults_and_overrides() {
+        let d = Config::default();
+        assert_eq!(
+            d.persist_threshold(),
+            Duration::from_millis(DEFAULT_PERSIST_THRESHOLD_MS)
+        );
+        assert_eq!(
+            d.idle_timeout(),
+            Some(Duration::from_secs(DEFAULT_IDLE_TIMEOUT_SECS))
+        );
+
+        let c = parse("persist_threshold_ms = 0\nidle_timeout_secs = 0").unwrap();
+        assert_eq!(c.persist_threshold(), Duration::from_millis(0));
+        assert_eq!(c.idle_timeout(), None);
+
+        let c = parse("persist_threshold_ms = 2500\nidle_timeout_secs = 60").unwrap();
+        assert_eq!(c.persist_threshold(), Duration::from_millis(2500));
+        assert_eq!(c.idle_timeout(), Some(Duration::from_secs(60)));
     }
 
     #[test]

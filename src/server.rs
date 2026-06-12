@@ -8,12 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use notify_debouncer_full::new_debouncer;
 use notify_debouncer_full::notify::RecursiveMode;
 
+use crate::config::Config;
 use crate::confirm::SearchOptions;
 use crate::index::{self, Index};
 use crate::paths;
@@ -23,6 +24,9 @@ use crate::transport::{self, Stream};
 /// How often a `watch` subscriber repaints when nothing changed (keeps the build-progress count and
 /// the snapshot age fresh, and detects client disconnect).
 const WATCH_HEARTBEAT: Duration = Duration::from_millis(250);
+
+/// Upper bound on how often the idle reaper wakes to check; short timeouts check at their own pace.
+const IDLE_CHECK_MAX: Duration = Duration::from_secs(15);
 
 struct Shared {
     index: RwLock<Index>,
@@ -37,6 +41,17 @@ struct Shared {
     /// A change counter + condvar so `watch` wakes immediately on any transition.
     seq: Mutex<u64>,
     seq_cv: Condvar,
+    /// A cold build at least this long earns an on-disk snapshot; below it the index stays RAM-only.
+    persist_threshold: Duration,
+    /// Whether the resident index is backed by a snapshot. Set once the cold build's duration is
+    /// known (warm starts keep the default `true`, since a snapshot already exists).
+    persist: AtomicBool,
+    /// Exit after this long with no client request, or `None` to stay resident.
+    idle_timeout: Option<Duration>,
+    /// Last time a client request arrived; drives the idle reaper.
+    last_active: Mutex<Instant>,
+    /// Attached `watch` subscribers; a live watcher keeps the daemon from idling out.
+    watchers: AtomicUsize,
 }
 
 impl Shared {
@@ -57,6 +72,11 @@ impl Shared {
             .store(self.read_index().memory_bytes(), Ordering::Relaxed);
         *self.seq.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         self.seq_cv.notify_all();
+    }
+
+    /// Record that a client just made a request, resetting the idle clock.
+    fn touch(&self) {
+        *self.last_active.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
     }
 
     /// Block until the change counter moves past `last` or the heartbeat elapses; return the latest.
@@ -80,6 +100,7 @@ pub fn run(root: PathBuf) -> Result<()> {
         None => return Ok(()), // another daemon owns this root
     };
 
+    let cfg = Config::get();
     let shared = Arc::new(Shared {
         index: RwLock::new(Index::default()),
         ready: AtomicBool::new(false),
@@ -90,10 +111,16 @@ pub fn run(root: PathBuf) -> Result<()> {
         index_bytes: AtomicU64::new(0),
         seq: Mutex::new(0),
         seq_cv: Condvar::new(),
+        persist_threshold: cfg.persist_threshold(),
+        persist: AtomicBool::new(true),
+        idle_timeout: cfg.idle_timeout(),
+        last_active: Mutex::new(Instant::now()),
+        watchers: AtomicUsize::new(0),
     });
 
     spawn_indexer(shared.clone());
     spawn_watcher(shared.clone());
+    spawn_idle_reaper(shared.clone());
 
     loop {
         let conn = match transport::accept(&listener) {
@@ -123,11 +150,18 @@ fn spawn_indexer(shared: Arc<Shared>) {
             shared.bump();
         } else {
             // Cold build: publish total, then index reporting per-file progress for watchers.
+            let started = Instant::now();
             let paths = index::walk_files(&shared.root);
             shared.total.store(paths.len(), Ordering::Relaxed);
             shared.bump();
             let built = Index::from_paths(&paths, &shared.indexed);
-            let _ = built.save(&shared.snapshot);
+            // A build cheap enough to redo on the next start stays RAM-only: skip the snapshot (and
+            // its per-reconcile rewrites), trading a sub-threshold cold rebuild for the disk.
+            let persist = started.elapsed() >= shared.persist_threshold;
+            shared.persist.store(persist, Ordering::SeqCst);
+            if persist {
+                let _ = built.save(&shared.snapshot);
+            }
             *shared.write_index() = built;
             shared.ready.store(true, Ordering::SeqCst);
             shared.bump();
@@ -158,7 +192,9 @@ fn spawn_watcher(shared: Arc<Shared>) {
             }
             let mut idx = shared.write_index();
             if idx.reconcile(&shared.root) > 0 {
-                let _ = idx.save(&shared.snapshot);
+                if shared.persist.load(Ordering::SeqCst) {
+                    let _ = idx.save(&shared.snapshot);
+                }
                 drop(idx);
                 shared.bump();
             }
@@ -166,8 +202,35 @@ fn spawn_watcher(shared: Arc<Shared>) {
     });
 }
 
+/// Exit the daemon once it has gone `idle_timeout` without a client request (freeing its RAM; the
+/// next search respawns it). A live `watch` subscriber counts as activity. No-op when disabled.
+fn spawn_idle_reaper(shared: Arc<Shared>) {
+    let Some(timeout) = shared.idle_timeout else {
+        return;
+    };
+    let tick = timeout.min(IDLE_CHECK_MAX);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(tick);
+            if shared.watchers.load(Ordering::SeqCst) > 0 {
+                continue;
+            }
+            let idle = shared
+                .last_active
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .elapsed();
+            if idle >= timeout {
+                transport::cleanup(&shared.root);
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
     let req = proto::read_request(&mut conn)?;
+    shared.touch();
     match req {
         // Errors here are essentially "client went away mid-stream"; ignore so we still attempt the
         // stream terminator below — a request that produced N frames then errored should not look
@@ -202,9 +265,12 @@ fn handle(mut conn: Stream, shared: &Shared) -> Result<()> {
 /// The blocking wait holds no index lock, and rendering only touches the (cheap-while-building)
 /// resident index, so an attached watcher does not slow indexing.
 fn watch(shared: &Shared, conn: &mut Stream) -> Result<()> {
+    shared.watchers.fetch_add(1, Ordering::SeqCst);
     let mut last = 0;
     loop {
         if proto::write_data(conn, &status(shared)).is_err() {
+            shared.watchers.fetch_sub(1, Ordering::SeqCst);
+            shared.touch(); // a just-ended watch counts as recent activity, not stale idle time
             return Ok(()); // client went away
         }
         last = shared.wait_change(last);
@@ -294,10 +360,13 @@ fn status(shared: &Shared) -> Vec<u8> {
             "building (scanning tree...)".to_string()
         }
     };
+    // RAM-only once a cold build decided not to persist; while building, the decision isn't made yet.
+    let ram_only = shared.ready.load(Ordering::SeqCst) && !shared.persist.load(Ordering::SeqCst);
     crate::status::Status {
         root: &shared.root,
         snapshot: &shared.snapshot,
         running: true,
+        ram_only,
         state: Some(state),
         files: Some(idx.file_count()),
         trigrams: Some(idx.trigram_count()),
