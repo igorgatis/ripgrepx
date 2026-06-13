@@ -242,6 +242,31 @@ pub fn collect_search_sorted(
     Ok(out)
 }
 
+/// Search a single explicitly-named file, the way `rg <pattern> <file>` does: the file is searched
+/// directly — no walk, no ignore rules, and no `-g`/`-t`/`-T` filter (ripgrep searches an explicitly
+/// named file unconditionally) — and printed under `file` exactly as given. No index or daemon is
+/// involved; an indexed tree doesn't need one file's worth of acceleration. `emit` gets the rendered
+/// `path:line:text` chunks.
+pub fn stream_file_search(
+    file: &str,
+    pattern: &str,
+    opts: SearchOptions,
+    emit: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let effective = effective_pattern(pattern, opts);
+    confirm::search_streaming(&effective, &[Path::new(file)], Path::new(""), opts, emit)
+}
+
+/// Buffered form of [`stream_file_search`], for the compact/paged view.
+pub fn collect_file_search(file: &str, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    stream_file_search(file, pattern, opts, |c| {
+        out.extend_from_slice(c);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 /// Collecting convenience over [`stream_search`] (used in tests).
 pub fn search(index: &Index, root: &Path, pattern: &str, opts: SearchOptions) -> Result<Vec<u8>> {
     let mut out = Vec::new();
@@ -255,6 +280,21 @@ pub fn search(index: &Index, root: &Path, pattern: &str, opts: SearchOptions) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_file_search_prints_path_as_given() {
+        let tmp = std::env::temp_dir().join(format!("rgx_file_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = tmp.join("only.txt");
+        std::fs::write(&p, b"alpha\nNEEDLE here\ngamma\n").unwrap();
+
+        let given = p.to_str().unwrap();
+        let out = collect_file_search(given, "NEEDLE", SearchOptions::default()).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, format!("{given}:2:NEEDLE here\n"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn is_fallback_routing() {

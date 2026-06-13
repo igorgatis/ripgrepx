@@ -692,6 +692,25 @@ fn content_cmd(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let path = paths.first().copied();
+    // An explicitly named file is searched directly, like `rg <pattern> <file>` — no walk, no daemon,
+    // and `--sort` is moot over a single file (file-level ordering is identity). Must precede
+    // `resolve_root`, which assumes a directory and would otherwise fail with "Not a directory". The
+    // `<label>` weight tags are stripped (via `rank::parse`) so the searched regex matches the
+    // directory path's; the filter is validated (rg rejects a bad glob even for a file) but not applied
+    // (rg searches a named file unconditionally).
+    if let Some(file) = file_scope(path) {
+        if let Err(code) = check_filter(&parsed.filter, &resolve_root(None)) {
+            return code;
+        }
+        let plain = match rgx::rank::parse(&pattern, parsed.weights, opts) {
+            Ok(r) => r.plain,
+            Err(e) => {
+                eprintln!("rgx: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        return stream_single_file(file, &plain, opts);
+    }
     let root = resolve_root(path);
     if let Err(code) = check_filter(&parsed.filter, &root) {
         return code;
@@ -900,11 +919,23 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let root = resolve_root(root_hint.as_deref());
+    // An explicitly named file is searched directly (see `stream_single_file`); the compact view then
+    // groups/pages that one file's matches. `root` stays the cwd so time-based sorts can still `stat`
+    // the file at its given (cwd-relative) path.
+    let scope = file_scope(root_hint.as_deref());
+    let root = resolve_root(if scope.is_some() {
+        None
+    } else {
+        root_hint.as_deref()
+    });
     if let Err(code) = check_filter(&filter, &root) {
         return code;
     }
-    let raw = match rgx::collect_search(&root, &ranking.plain, opts, &filter) {
+    let search = match scope {
+        Some(file) => rgx::collect_file_search(file, &ranking.plain, opts),
+        None => rgx::collect_search(&root, &ranking.plain, opts, &filter),
+    };
+    let raw = match search {
         Ok(r) => r,
         Err(e) => {
             eprintln!("rgx: {e}");
@@ -965,6 +996,34 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// True if `e` is (or wraps) a broken-pipe I/O error.
+/// The first positional when it names an existing file — the `rg <pattern> <file>` case, searched
+/// directly (no walk/daemon). `None` for a directory, a missing path, or no positional (the normal
+/// indexed path). One place so the file-vs-directory rule can't drift between the search surfaces.
+fn file_scope(path: Option<&str>) -> Option<&str> {
+    path.filter(|p| std::path::Path::new(p).is_file())
+}
+
+/// Stream a single explicitly-named file's matches to stdout (the `rgx <pattern> <file>` path). Exit
+/// codes match the rest: 0 with output, 1 with none, 2 on error; a closed pipe is a clean exit.
+fn stream_single_file(file: &str, pattern: &str, opts: SearchOptions) -> ExitCode {
+    let mut stdout = std::io::stdout();
+    let mut wrote = 0usize;
+    let res = rgx::stream_file_search(file, pattern, opts, |c| {
+        wrote += c.len();
+        stdout.write_all(c)?;
+        Ok(())
+    });
+    match res {
+        Ok(()) if wrote == 0 => ExitCode::from(1),
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rgx: {e}");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn is_broken_pipe(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>()
         .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
