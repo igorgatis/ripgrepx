@@ -72,6 +72,17 @@ larger detection window, so it only ever skips files ripgrep also suppresses. Ev
 indexed in full; a deep-NUL file's post-NUL trigrams only over-include candidates, which is harmless
 (the confirm step reproduces ripgrep's search-until-NUL behavior — see [`querying.md`](querying.md)).
 
+### Encoding (BOM transcoding)
+
+ripgrep sniffs a leading byte-order mark by default and **transcodes UTF-16 (LE/BE) to UTF-8** (and
+strips a UTF-8 BOM) *before* matching. A UTF-16 file's bytes are NUL-interleaved (`Z\0Q\0…`), so they
+contain none of the pattern's UTF-8 trigrams and would also trip the NUL binary check — meaning a
+trigram-accelerated query would silently miss it. So the indexer applies the **same** BOM decode
+ripgrep's searcher does (`decode_for_index`, mirroring `DecodeReaderBytesBuilder` with
+`strip_bom`/`bom_override`/`bom_sniffing`) before binary detection and trigram extraction. The index
+then holds exactly the trigrams confirm will match. Non-BOM files pass through untouched (zero-copy),
+so the hot build path is unchanged. Explicit `--encoding` overrides are not yet supported.
+
 ## The ripgrep-parity walk
 
 The candidate walk must yield **exactly** the files `rg` would for the same invocation: confirm

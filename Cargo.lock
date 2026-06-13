@@ -908,6 +908,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "dhat",
+ "encoding_rs",
  "grep",
  "ignore",
  "memchr",

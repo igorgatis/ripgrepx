@@ -9,6 +9,7 @@
 //! candidate that ripgrep then filters out. Deleted files are tombstoned (`live = false`) so they
 //! stop being candidates. See `docs/indexing.md` (binary files; keeping it fresh).
 
+use std::borrow::Cow;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -474,33 +475,34 @@ fn index_files(
             progress.fetch_add(1, Ordering::Relaxed);
             let id = id as u32;
             let (size, mtime_ns) = stat(path);
-            if let Ok(bytes) = std::fs::read(path)
-                && !is_binary_from_start(&bytes)
-            {
-                distinct.clear();
-                trigram::for_each(&bytes, |t| {
-                    let key = trigram::pack(t);
-                    let (w, b) = ((key >> 6) as usize, key & 63);
-                    if bits[w] & (1u64 << b) == 0 {
-                        bits[w] |= 1u64 << b;
-                        distinct.push(key);
+            if let Ok(raw) = std::fs::read(path) {
+                let bytes = decode_for_index(&raw);
+                if !is_binary_from_start(&bytes) {
+                    distinct.clear();
+                    trigram::for_each(&bytes, |t| {
+                        let key = trigram::pack(t);
+                        let (w, b) = ((key >> 6) as usize, key & 63);
+                        if bits[w] & (1u64 << b) == 0 {
+                            bits[w] |= 1u64 << b;
+                            distinct.push(key);
+                        }
+                    });
+                    by_shard.iter_mut().for_each(Vec::clear);
+                    for &key in distinct.iter() {
+                        by_shard[(key as usize) & (SHARDS - 1)].push(key);
                     }
-                });
-                by_shard.iter_mut().for_each(Vec::clear);
-                for &key in distinct.iter() {
-                    by_shard[(key as usize) & (SHARDS - 1)].push(key);
-                }
-                for (s, keys) in by_shard.iter().enumerate() {
-                    if keys.is_empty() {
-                        continue;
+                    for (s, keys) in by_shard.iter().enumerate() {
+                        if keys.is_empty() {
+                            continue;
+                        }
+                        let mut g = shards[s].lock().unwrap();
+                        for &key in keys {
+                            g.entry(key).or_default().insert(id);
+                        }
                     }
-                    let mut g = shards[s].lock().unwrap();
-                    for &key in keys {
-                        g.entry(key).or_default().insert(id);
+                    for &key in distinct.iter() {
+                        bits[(key >> 6) as usize] &= !(1u64 << (key & 63));
                     }
-                }
-                for &key in distinct.iter() {
-                    bits[(key >> 6) as usize] &= !(1u64 << (key & 63));
                 }
             }
             (size, mtime_ns)
@@ -535,15 +537,38 @@ fn is_binary_from_start(bytes: &[u8]) -> bool {
     memchr::memchr(0, &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)]).is_some()
 }
 
+/// The bytes to index for `raw`, mirroring ripgrep's default BOM sniffing exactly:
+/// - a UTF-16 (LE/BE) BOM ⇒ transcode the rest to UTF-8 (lossy, U+FFFD for malformed units), so the
+///   index holds the same bytes the confirm searcher matches against;
+/// - a UTF-8 BOM ⇒ strip the 3 BOM bytes but pass the (already UTF-8) content through unchanged, the
+///   same as ripgrep's `utf8_passthru` — it must NOT re-decode, which would replace raw invalid bytes;
+/// - anything else ⇒ untouched (zero-copy), so the hot build path is unchanged.
+///
+/// Without the UTF-16 case, that file's NUL-interleaved bytes hold none of the pattern's trigrams (and
+/// trip binary detection), so it would never be a candidate — a silently dropped match. The one-shot
+/// `encoding_rs` decode matches grep-searcher's streaming decode byte-for-byte (encoding_rs guarantees
+/// streaming and non-streaming agree, including the EOF flush of a trailing replacement char).
+fn decode_for_index(raw: &[u8]) -> Cow<'_, [u8]> {
+    match encoding_rs::Encoding::for_bom(raw) {
+        Some((enc, bom_len)) if enc == encoding_rs::UTF_8 => Cow::Borrowed(&raw[bom_len..]),
+        Some((enc, bom_len)) if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE => {
+            let (text, _) = enc.decode_without_bom_handling(&raw[bom_len..]);
+            Cow::Owned(text.into_owned().into_bytes())
+        }
+        _ => Cow::Borrowed(raw),
+    }
+}
+
 /// Fill `seen` with the distinct trigrams of `bytes`, returning whether the file should be indexed.
 /// Binary-from-start files get no postings (the one place this decision is made, shared by the cold
 /// build and incremental updates so they can't drift).
 fn collect_trigrams(bytes: &[u8], seen: &mut FxHashSet<Trigram>) -> bool {
-    if is_binary_from_start(bytes) {
+    let bytes = decode_for_index(bytes);
+    if is_binary_from_start(&bytes) {
         return false;
     }
     seen.clear();
-    trigram::for_each(bytes, |t| {
+    trigram::for_each(&bytes, |t| {
         seen.insert(t);
     });
     true
@@ -587,6 +612,39 @@ mod tests {
         // A fallback query (no usable trigram) makes every live file a candidate, incl. bin.dat.
         let fb = names(idx.candidates(&Query::for_pattern("a.", Options::default())));
         assert_eq!(fb, vec!["a.txt", "b.txt", "bin.dat", "c.txt"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn utf16_bom_file_is_a_candidate() {
+        let tmp = std::env::temp_dir().join(format!("rgx_bom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        write(&tmp, "u8.txt", "ZQXWVNEEDLE\n".as_bytes());
+        // UTF-16LE BOM (FF FE) + each ASCII byte followed by 0x00 — exactly what `rg` transcodes
+        // before matching. Raw bytes hold no "ZQX" trigram, so without decode this file is missed.
+        let mut u16 = vec![0xFF, 0xFE];
+        for b in "ZQXWVNEEDLE\n".bytes() {
+            u16.push(b);
+            u16.push(0x00);
+        }
+        write(&tmp, "u16.txt", &u16);
+
+        // A truncated UTF-16 file (dangling odd byte) decodes to a trailing U+FFFD, exactly as `rg`
+        // sees it — the index must carry that replacement char's trigram, not a truncated one.
+        let mut bad = vec![0xFF, 0xFE];
+        for b in "ABCDEF".bytes() {
+            bad.push(b);
+            bad.push(0x00);
+        }
+        bad.push(0x42);
+        write(&tmp, "bad.txt", &bad);
+
+        let idx = Index::build(&tmp);
+        let q = Query::for_pattern("ZQXWVNEEDLE", Options::default());
+        assert_eq!(names(idx.candidates(&q)), vec!["u16.txt", "u8.txt"]);
+        let qr = Query::for_pattern("\u{FFFD}", Options::default());
+        assert_eq!(names(idx.candidates(&qr)), vec!["bad.txt"]);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
