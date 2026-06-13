@@ -32,6 +32,11 @@ the repo) replaces just that project's daemon.
   updates the relevant `docs/`, `README.md`, and [`assets/skill.md`](assets/skill.md) in the same
   commit. `assets/skill.md` (embedded at build time, installed by `rgx --agent install`) is the
   agent-facing source of truth — never let docs or skill describe a state the code isn't in.
+- **Dogfood `rgx`.** Use `rgx` for content search while working on this repo instead of `rg`/`grep` —
+  it has byte-for-byte parity with ripgrep and is the tool under development, so daily use surfaces
+  regressions early. After a `build:install`, restart the daemon (see above) so you're searching with
+  the build you just made. The one exception is benchmarking: call raw `rg` so rgx doesn't perturb the
+  baseline.
 
 ## Testing
 
