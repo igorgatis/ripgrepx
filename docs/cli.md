@@ -38,8 +38,10 @@ files exactly as `rg --sort` does. Works on the bare search and in `--compact`/M
 
 **Weighted match** (`--sort=weight`) is a model-supplied relevance order: declare branch weights with
 `--weights=label:weight,...` and tag regex alternation branches in the pattern with `<label>`. The
-tags are stripped before searching, so the match set stays `rg`'s; files are ordered by the weight of
-the branch they matched (highest first), unattributed matches last. Not combinable with `-F`.
+tags are stripped before searching, so the match set stays `rg`'s; each file is ranked by its
+highest-weighted matched branch (highest first), unattributed matches last. Weights are relative ranks
+— any finite numbers, larger first; they needn't sum to 1 and aren't probabilities. Not combinable with
+`-F`.
 
 ```sh
 rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'

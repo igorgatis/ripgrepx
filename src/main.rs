@@ -91,7 +91,8 @@ Examples:
 
 ORDER results like `rg --sort` — `--sort=KEY` (asc) / `--sortr=KEY` (desc), KEY = path | modified |
 accessed | created (file metadata) | weight (relevance). For weight, declare branch weights with
-`--weights=label:weight,...` and tag regex branches in the pattern with <label>:
+`--weights=label:weight,...` and tag regex branches in the pattern with <label>; each file ranks by its
+highest matched weight (relative numbers, larger first; tags are stripped, so matches are unchanged):
     rgx --sortr=modified TODO src/     rgx --sort=weight --weights=a:0.9,b:0.1 '(foo<a>|bar<b>)'
 
 SERVER — the indexer starts on first use and stays fresh on its own; subcommands act on the cwd's

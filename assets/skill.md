@@ -44,8 +44,11 @@ rgx --sortr=modified TODO   # order results (like rg --sort); see below
 - **Order results** with `--sort=KEY` / `--sortr=KEY` (ripgrep's flags), `KEY` = `path` | `modified` |
   `accessed` | `created` | `weight`. `weight` is a relevance order: add `--weights=label:weight,...`
   and tag regex alternation branches with `<label>` — e.g.
-  `rgx --sort=weight --weights=impl:0.9,call:0.1 '(process<impl>|process\(<call>)'`. The tags are
-  stripped before searching, so results stay byte-for-byte `rg`'s; reordering only, nothing dropped.
+  `rgx --sort=weight --weights=impl:0.9,call:0.1 '(process<impl>|process\(<call>)'`. Each file ranks by
+  the highest-weighted branch it matched (a match in no tagged branch scores 0 and sinks last); weights
+  are relative ranks — any finite numbers, larger first, not probabilities (needn't sum to 1). The tags
+  are stripped before searching, so this never changes which files/lines match (stays byte-for-byte
+  `rg`'s) — it only reorders.
 - **Modes (`--compact`, `--find`, `--server`, `--agent`) are recognized only as the first token** —
   `rgx --compact 'fn ' src/`, never `rgx 'fn ' --compact`. Search flags can follow in any position.
 - Patterns the index can't accelerate (e.g. `.`, very short) fall back to a full scan — still correct.

@@ -114,7 +114,8 @@ was stopped) you get `pagination expired — re-run the search`.
 
 `--sort=KEY` / `--sortr=KEY` reorder results — ripgrep's own flags and vocabulary (`path`, `modified`,
 `accessed`, `created`), plus rgx's `weight` for **relevance**: tag regex alternation branches with
-`<label>`, weight them with `--weights`, and files matching higher-weighted branches float to the top.
+`<label>`, weight them with `--weights`, and each file floats up by its highest-weighted matched branch
+(untagged matches sink last). Weights are relative ranks — any numbers, larger first, not probabilities.
 The `<label>` tags are stripped before searching, so the match set stays exactly `rg`'s — reordering
 only, nothing dropped. Works on the bare search (like `rg --sort`) and in `--compact`/MCP (where the
 order holds across pages).

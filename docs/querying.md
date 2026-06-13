@@ -168,9 +168,10 @@ The `<label>` tags are **stripped** to form the plain pattern ripgrep actually s
 capture-instrumented copy of the regex — each labeled branch wrapped in a named capture group — and,
 for each matching line, reads which branch participated to get its weight. A file's score is the
 **max** weight over its matched lines (per-file aggregation), and a match attributable to no labeled
-branch scores 0 and **sinks last** — still present and reachable, just deprioritized. `--sort=weight`
-puts highest-weight files first (`--sortr=weight` flips it); `-F` has no branches to weight and is
-rejected.
+branch scores 0 and **sinks last** — still present and reachable, just deprioritized. Weights are
+relative ranks — any finite numbers, larger first; they needn't sum to 1 and aren't probabilities.
+`--sort=weight` puts highest-weight files first (`--sortr=weight` flips it); `-F` has no branches to
+weight and is rejected.
 
 This is reorder-only *by construction*: scoring runs in the presentation layer over already-confirmed
 matches (which branch matched is the regex engine's call, never ours). If the instrumented regex ever
