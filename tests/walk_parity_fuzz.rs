@@ -134,6 +134,59 @@ fn walk_matches_rg_on_random_trees() {
 }
 
 #[test]
+fn delta_walk_matches_rg_for_hidden_and_no_ignore() {
+    if common::rg().is_none() {
+        eprintln!("rg not on PATH; skipping --hidden/--no-ignore delta-walk parity");
+        return;
+    }
+    use rgx::confirm::SearchOptions;
+    use rgx::filter::FilterSpec;
+    let td = tempfile::tempdir().unwrap();
+    let r = td.path();
+    // Indexed (default) files — one matches, one doesn't (so trigram narrowing is exercised); plus a
+    // hidden file and a gitignored file that also match.
+    write(r, "a.rs", "fn alpha() { NEEDLE }\n");
+    write(r, "sub/b.rs", "fn beta() { NEEDLE }\n");
+    write(r, "nomatch.rs", "fn x() {}\n");
+    write(r, ".hidden.rs", "fn hid() { NEEDLE }\n");
+    write(r, "skip.log", "NEEDLE in a log\n");
+    write(r, ".ignore", "*.log\n");
+    let index = rgx::index::Index::build(r); // default walk: a.rs, sub/b.rs, nomatch.rs
+
+    for (hidden, no_ignore, flags) in [
+        (true, false, vec!["--hidden"]),
+        (false, true, vec!["--no-ignore"]),
+        (true, true, vec!["--hidden", "--no-ignore"]),
+    ] {
+        let opts = SearchOptions {
+            hidden,
+            no_ignore,
+            ..Default::default()
+        };
+        let toggled = rgx::index::walk_files_for(r, hidden, no_ignore);
+        let paths = rgx::candidate_and_delta_paths(
+            &index,
+            r,
+            "NEEDLE",
+            opts,
+            &FilterSpec::default(),
+            toggled,
+        )
+        .unwrap();
+        let refs: Vec<&std::path::Path> = paths.iter().map(|p| p.as_path()).collect();
+        let out = rgx::confirm::search("NEEDLE", &refs, r, opts).unwrap();
+        let mut ours: Vec<String> = String::from_utf8(out)
+            .unwrap()
+            .lines()
+            .map(|l| l.replace('\\', "/"))
+            .collect();
+        ours.sort();
+        let theirs = common::rg_search(r, "NEEDLE", &flags);
+        assert_eq!(ours, theirs, "flags {flags:?}");
+    }
+}
+
+#[test]
 fn candidate_filter_matches_rg_file_selection() {
     if common::rg().is_none() {
         eprintln!("rg not on PATH; skipping -g/-t candidate-filter parity");

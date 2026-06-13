@@ -58,6 +58,14 @@ impl Index {
         self.postings.len()
     }
 
+    /// Whether `path` is a live (non-tombstoned) file the index already covers. Used by the
+    /// `--hidden`/`--no-ignore` delta walk to keep only the files the index does *not* hold.
+    pub fn is_indexed_live(&self, path: &Path) -> bool {
+        self.path_to_id
+            .get(path)
+            .is_some_and(|&id| self.entries[id as usize].live)
+    }
+
     /// Build an index over `root`, honoring the same ignore rules ripgrep uses by default.
     pub fn build(root: impl AsRef<Path>) -> Index {
         let paths = walk_files(root.as_ref());

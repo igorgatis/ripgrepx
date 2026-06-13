@@ -51,3 +51,27 @@ pub fn rg_files_with(dir: &Path, extra: &[&str]) -> Vec<String> {
     v.sort();
     v
 }
+
+/// `rg -n <extra...> <pattern> .` run with cwd `dir`: matching `path:lineno:text` lines (the `./`
+/// prefix stripped, `\` normalized), sorted. The content oracle for differential parity checks.
+pub fn rg_search(dir: &Path, pattern: &str, extra: &[&str]) -> Vec<String> {
+    let out = rg_cmd()
+        .arg("-n")
+        .args(extra)
+        .arg(pattern)
+        .arg(".")
+        .current_dir(dir)
+        .output()
+        .expect("run rg search");
+    assert!(
+        out.status.success() || out.status.code() == Some(1),
+        "rg search failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim_start_matches("./").replace('\\', "/"))
+        .collect();
+    v.sort();
+    v
+}

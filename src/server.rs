@@ -361,16 +361,30 @@ fn content_search(
     filter: &crate::filter::FilterSpec,
     conn: &mut Stream,
 ) -> Result<()> {
-    // The index can only serve a query the index can narrow. A fallback query — no usable trigram, or
-    // `-v`/`--hidden`/`--no-ignore` (which need every file, resp. files the index never indexed) —
-    // must full-scan, exactly as the client decides before a normal request is ever sent. Honoring it
-    // here too keeps the daemon correct even for a request that reaches it unguarded.
+    // A query the index can narrow takes the candidate path. `--hidden`/`--no-ignore` widen the file
+    // set, so they add a delta walk to the candidates (still index-accelerated). Only a true fallback
+    // — no usable trigram, or `-v` (needs every file) — full-scans; the client already routes those
+    // in-process, so `!is_fallback` here is mostly a guard for a request that reaches the daemon
+    // unguarded.
     if shared.ready.load(Ordering::SeqCst) && !crate::is_fallback(pattern, opts) {
-        // Resolve candidates while holding the read lock, then RELEASE it before streaming: ripgrep
-        // confirm + blocking socket writes must never run under the index lock, or a slow client
-        // would block the watcher's write lock and freeze indexing.
-        let paths =
-            crate::candidate_paths(&shared.read_index(), &shared.root, pattern, opts, filter)?;
+        // `--hidden`/`--no-ignore` widen the file set beyond what the index holds, so add the *delta*
+        // (files the index doesn't cover) to the trigram candidates. The toggled walk is I/O, so do it
+        // BEFORE taking the read lock; resolving candidates + delta membership is in-memory under the
+        // lock, which is released before the (blocking) confirm + socket writes — never hold the index
+        // lock across I/O, or a slow client would freeze indexing.
+        let paths = if opts.hidden || opts.no_ignore {
+            let toggled = crate::index::walk_files_for(&shared.root, opts.hidden, opts.no_ignore);
+            crate::candidate_and_delta_paths(
+                &shared.read_index(),
+                &shared.root,
+                pattern,
+                opts,
+                filter,
+                toggled,
+            )?
+        } else {
+            crate::candidate_paths(&shared.read_index(), &shared.root, pattern, opts, filter)?
+        };
         let effective = crate::effective_pattern(pattern, opts);
         let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         crate::confirm::search_streaming(&effective, &refs, &shared.root, opts, |chunk| {

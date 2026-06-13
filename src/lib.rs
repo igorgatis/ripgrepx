@@ -60,12 +60,11 @@ fn query_options(opts: SearchOptions) -> QueryOptions {
 /// this to scan such queries in-process — one process streamed straight to stdout, like ripgrep —
 /// instead of paying the daemon round-trip to ship a potentially huge result set back.
 pub fn is_fallback(pattern: &str, opts: SearchOptions) -> bool {
-    // `-v` wants the lines that DON'T match (so every file is a candidate, not just the trigram
-    // hits), and `--hidden`/`--no-ignore` want files the index never indexed. None can be served from
-    // the trigram index, so they scan the tree in-process with the adjusted walk/searcher.
+    // `-v` wants the lines that DON'T match, so every file is a candidate, not just the trigram hits —
+    // the index can't narrow it. (`--hidden`/`--no-ignore` are NOT fallback: the daemon serves them
+    // with the trigram candidates plus a delta walk of the files the index doesn't cover — see
+    // `candidate_and_delta_paths`. They only fall back when the pattern itself has no trigram.)
     opts.invert
-        || opts.hidden
-        || opts.no_ignore
         || Query::for_pattern(&effective_pattern(pattern, opts), query_options(opts)).is_fallback()
 }
 
@@ -92,6 +91,43 @@ pub fn candidate_paths(
         let ff = filter.compile(root)?;
         paths.retain(|p| ff.matched(p));
     }
+    Ok(paths)
+}
+
+/// The files to search for a `--hidden`/`--no-ignore` query, accelerated: the trigram candidates from
+/// the index (the default-walk files) **plus** the *delta* — the `toggled` walk's files that the index
+/// doesn't cover (the hidden/ignored extras). Sound: the index half is trigram-narrowed (never drops a
+/// match), the delta half carries no trigram constraint and is searched in full. `toggled` is passed
+/// in (walked by the caller *outside* the index lock) so this stays a pure in-memory step. The same
+/// `-g`/`-t`/`-T` filter is applied to the delta, exactly as `rg` applies it to every file.
+pub fn candidate_and_delta_paths(
+    index: &Index,
+    root: &Path,
+    pattern: &str,
+    opts: SearchOptions,
+    filter: &FilterSpec,
+    toggled: Vec<std::path::PathBuf>,
+) -> Result<Vec<std::path::PathBuf>> {
+    let effective = effective_pattern(pattern, opts);
+    let query = Query::for_pattern(&effective, query_options(opts));
+    // Compile the `-g`/`-t`/`-T` matcher once and apply it to both halves (candidates and delta).
+    let ff = (!filter.is_empty())
+        .then(|| filter.compile(root))
+        .transpose()?;
+    let keep = |p: &Path| ff.as_ref().is_none_or(|f| f.matched(p));
+    let mut paths: Vec<std::path::PathBuf> = index
+        .candidates(&query)
+        .into_iter()
+        .filter(|p| keep(p))
+        .map(Path::to_path_buf)
+        .collect();
+    for p in toggled {
+        if !index.is_indexed_live(&p) && keep(&p) {
+            paths.push(p);
+        }
+    }
+    paths.sort();
+    paths.dedup();
     Ok(paths)
 }
 
@@ -214,4 +250,47 @@ pub fn search(index: &Index, root: &Path, pattern: &str, opts: SearchOptions) ->
         Ok(())
     })?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_fallback_routing() {
+        let plain = SearchOptions::default();
+        // A trigram-accelerable pattern is not a fallback...
+        assert!(!is_fallback("needle", plain));
+        // ...and `--hidden`/`--no-ignore` keep it accelerated (served by the delta walk), so they must
+        // NOT be fallback — a regression re-adding them here would silently full-scan.
+        assert!(!is_fallback(
+            "needle",
+            SearchOptions {
+                hidden: true,
+                ..plain
+            }
+        ));
+        assert!(!is_fallback(
+            "needle",
+            SearchOptions {
+                no_ignore: true,
+                ..plain
+            }
+        ));
+        // `-v` needs every file, and a no-trigram pattern can't be narrowed: both fall back.
+        assert!(is_fallback(
+            "needle",
+            SearchOptions {
+                invert: true,
+                ..plain
+            }
+        ));
+        assert!(is_fallback(
+            ".",
+            SearchOptions {
+                hidden: true,
+                ..plain
+            }
+        ));
+    }
 }

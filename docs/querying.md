@@ -58,40 +58,34 @@ code path — ripgrep confirms over whatever `candidates()` returns. The CLI sho
 straight to an in-process pipelined scan (below) rather than the daemon, since the index can't narrow
 it.
 
-Three flags force this fallback even for a trigram-accelerable pattern, because the index can't serve
-them: `-v`/`--invert-match` wants the lines that *don't* match (every file is a candidate, and the
-searcher emits the complement), and `--hidden`/`--no-ignore` want files the index never indexed (the
-fallback walk is rebuilt with those toggles — see [`indexing.md`](indexing.md)). Output stays
-byte-for-byte `rg`'s; only the index speedup is forgone.
+`-v`/`--invert-match` forces this fallback even for a trigram-accelerable pattern: it wants the lines
+that *don't* match, so every file is a candidate (the searcher emits the complement) and the index
+can't narrow it. The CLI scans those in-process. Output stays byte-for-byte `rg`'s; only the index
+speedup is forgone.
 
-### Future: candidates ∪ delta-walk (accelerate `--hidden`/`--no-ignore`)
+### `--hidden` / `--no-ignore`: candidates ∪ delta-walk
 
-`-v` inherently needs every file, so its full scan is unavoidable. But `--hidden`/`--no-ignore` only
-*add* files to the search set — the default-walk files (which the index already covers) plus a
-**delta**: the hidden/ignored files the toggled walk includes and the default walk excludes. Throwing
-the whole index away to re-grep the entire tree is wasteful when the delta is small (often it isn't —
-`--no-ignore` over a giant `node_modules` is the pathological case — but for `--hidden` the delta is
-usually tiny). A sound accelerated plan:
+`-v` inherently needs every file, but `--hidden`/`--no-ignore` only *add* files — the default-walk set
+(which the index already covers) plus a **delta**: the hidden/ignored files the toggled walk includes
+and the default walk excludes. So rather than re-grep the whole tree, the daemon accelerates them
+(`lib::candidate_and_delta_paths`, used by `server::content_search`):
 
 1. **Trigram candidates** for the *indexed* (default) set — the normal `index.candidates(query)`.
-2. **Delta walk:** walk the tree with the toggle on; a file already in the index (`path_to_id`,
-   `live`) is covered by step 1, so keep only the rest — the unindexed delta.
+2. **Delta walk:** walk the tree with the toggle on (`walk_files_for`), keeping only files the index
+   doesn't already cover (`Index::is_indexed_live`) — the unindexed delta.
 3. **Confirm** over `candidates ∪ delta`: the delta files are unindexed, so they carry no trigram
-   constraint and are all searched (sound); the indexed slice stays narrowed to its trigram hits.
+   constraint and are searched in full (sound); the indexed slice stays narrowed to its trigram hits.
 
 **Soundness.** The toggled walk yields `default-set ∪ delta`. The index soundly narrows the
 default-set half (never drops a match); the delta half is searched in full. So every file the toggled
-walk would match is searched — same guarantee as today, fewer files grepped.
+walk would match is searched — exactly `rg`'s set, fewer files grepped. The toggled walk runs *before*
+the index read lock is taken (it's I/O), so the lock spans only the in-memory candidate + membership
+step. A `-g`/`-t`/`-T` filter applies to the delta too, as `rg` applies it to every file.
 
 **Cost.** Still pays the *walk* (you must enumerate the delta), but saves the *grep* on every indexed
-non-candidate file — the dominant cost. Net win whenever the indexed source tree dwarfs the delta.
-
-**Where it runs / open questions.** This moves `--hidden`/`--no-ignore` back onto the daemon (it owns
-the index and `path_to_id`), as a new candidates-∪-delta mode in `server::content_search` rather than
-the in-process `full_scan`. Open: tombstoned-but-ignored files (in `path_to_id`, `live = false`) must
-count as delta; whether the walk cost alone makes `--no-ignore` over a huge ignored tree not worth it
-(maybe gate the optimization on delta size); and the daemon round-trip vs. the current zero-hop
-in-process scan for tiny repos. Until built, the simple force-fallback above is correct and honest.
+non-candidate file — the dominant cost. So `--no-ignore 'rare_pattern'` greps the handful of trigram
+candidates plus the ignored delta, not the whole source tree. (A `--hidden`/`--no-ignore` query whose
+*pattern* has no trigram still fully falls back, since the candidate half can't be narrowed either.)
 
 ## The confirm step
 
