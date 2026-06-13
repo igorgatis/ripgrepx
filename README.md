@@ -15,8 +15,8 @@ scan; **ripgrep still does the matching**, so results are byte-for-byte `rg`'s, 
 index can only cost a little speed, never a missed or invented match. It searches content (full
 ripgrep regex) and locates files by name (find/fd-style), from the terminal or an AI agent over MCP.
 
-Warm, `rgx` answers most queries in well under 60 ms where `rg` takes 100 ms to 2.5 s — a **15–50×**
-speedup on the kind of symbol searches a developer actually runs, up to **128×** on the most
+Warm, `rgx` answers most queries in tens of milliseconds where `rg` takes 100 ms to 2 s — a **10–50×**
+speedup on the kind of symbol searches a developer actually runs, up to **117×** on the most
 selective. See the [benchmarks](#benchmarks) for the full numbers.
 
 ## Install
@@ -173,25 +173,25 @@ from each project's own code and commit history), `mean ± σ` over 10 runs:
 
 | repo | query | `rg` | `rgx` | speedup |
 | --- | --- | --- | --- | --- |
-| lucene | `CorruptIndexException` | 101 ± 2 ms | 4.6 ± 0.2 ms | **22×** |
-| lucene | `IndexWriter` | 103 ± 1 ms | 17.8 ± 0.8 ms | **6×** |
-| lucene | `TieredMergePolicy\|LogMergePolicy` | 101 ± 1 ms | 6.3 ± 0.3 ms | **16×** |
-| vscode | `TreeDataProvider` | 198 ± 2 ms | 4.1 ± 0.1 ms | **48×** |
-| vscode | `onDidChangeConfiguration` | 201 ± 2 ms | 13.6 ± 0.3 ms | **15×** |
-| vscode | `registerCommand` | 200 ± 2 ms | 14.0 ± 0.2 ms | **14×** |
-| kubernetes | `func (kl *Kubelet)` | 409 ± 6 ms | 3.2 ± 0.2 ms | **128×** |
-| kubernetes | `context deadline exceeded` | 418 ± 7 ms | 5.7 ± 0.1 ms | **73×** |
-| kubernetes | `EndpointSlice` | 419 ± 9 ms | 8.4 ± 0.2 ms | **50×** |
-| kubernetes | `metav1.ObjectMeta` | 411 ± 10 ms | 29.9 ± 0.2 ms | **14×** |
-| linux | `struct task_struct` | 1803 ± 373 ms | 42.8 ± 1.0 ms | **42×** |
-| linux | `kmalloc` | 2308 ± 507 ms | 57.5 ± 1.4 ms | **40×** |
-| linux | `EXPORT_SYMBOL_GPL` | 1606 ± 56 ms | 54.0 ± 1.3 ms | **30×** |
-| linux | `MODULE_LICENSE` (broad) | 2518 ± 176 ms | 161.6 ± 1.8 ms | **16×** |
+| lucene | `CorruptIndexException` | 101 ± 1 ms | 6.9 ± 0.1 ms | **15×** |
+| lucene | `IndexWriter` | 103 ± 1 ms | 38.1 ± 0.3 ms | **3×** |
+| lucene | `TieredMergePolicy\|LogMergePolicy` | 101 ± 1 ms | 10.9 ± 0.2 ms | **9×** |
+| vscode | `TreeDataProvider` | 202 ± 5 ms | 4.4 ± 0.3 ms | **46×** |
+| vscode | `onDidChangeConfiguration` | 201 ± 2 ms | 23.5 ± 0.3 ms | **9×** |
+| vscode | `registerCommand` | 200 ± 3 ms | 19.7 ± 0.3 ms | **10×** |
+| kubernetes | `func (kl *Kubelet)` | 408 ± 6 ms | 3.5 ± 0.2 ms | **117×** |
+| kubernetes | `context deadline exceeded` | 414 ± 7 ms | 5.6 ± 0.2 ms | **74×** |
+| kubernetes | `EndpointSlice` | 408 ± 6 ms | 16.4 ± 0.3 ms | **25×** |
+| kubernetes | `metav1.ObjectMeta` | 411 ± 7 ms | 71.7 ± 0.3 ms | **6×** |
+| linux | `struct task_struct` | 1592 ± 50 ms | 70.5 ± 0.8 ms | **23×** |
+| linux | `kmalloc` | 1444 ± 38 ms | 133.2 ± 1.1 ms | **11×** |
+| linux | `EXPORT_SYMBOL_GPL` | 2185 ± 126 ms | 135.0 ± 0.7 ms | **16×** |
+| linux | `MODULE_LICENSE` (broad) | 2146 ± 79 ms | 420.8 ± 1.6 ms | **5×** |
 
 The more selective the query, the bigger the win (a rare symbol touches few files; a `func (kl
-*Kubelet)` receiver hits 13 of 30k). rgx is also markedly **more consistent**: its σ stays sub-2 ms
-while a full `rg` scan's swings with cache state (linux `kmalloc`: rg 2308 ± 507 ms vs rgx 57 ± 1 ms).
-The full set (and the fallback rows below) is in [`benches/baseline.txt`](benches/baseline.txt).
+*Kubelet)` receiver hits 13 of 30k). rgx is also markedly **more consistent**: its σ stays around a
+millisecond while a full `rg` scan's swings with cache state (linux `EXPORT_SYMBOL_GPL`: rg 2185 ± 126
+ms vs rgx 135.0 ± 0.7 ms). The full set is in [`benches/baseline.txt`](benches/baseline.txt).
 
 **Honest caveat.** A *fallback* query the index can't narrow — no usable trigram, e.g. `\w+` or a
 2-char pattern — is handled by an in-process pipelined scan and lands at **parity** with `rg`. The one
@@ -207,7 +207,8 @@ exception is a *match-everything* query like `.*` over the largest repo (printin
   the same sink, so the comparison is apples-to-apples.
 - Reproduce: `RGX=target/release/rgx benches/bench.sh <repo> <pattern>...` (the script prints the `rg`
   version, warms the daemon, benchmarks each pattern, and flags any regression). Numbers vary with
-  hardware and cache state.
+  hardware, cache state, and machine load — rgx's latency-bound times are the more load-sensitive side,
+  so these (taken under light load) are conservative; the speedups and "rgx faster" verdict are stable.
 
 ## Documentation
 

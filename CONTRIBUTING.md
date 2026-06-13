@@ -37,6 +37,14 @@ the repo) replaces just that project's daemon.
   regressions early. After a `build:install`, restart the daemon (see above) so you're searching with
   the build you just made. The one exception is benchmarking: call raw `rg` so rgx doesn't perturb the
   baseline.
+- **Benchmark every code change.** Any commit that touches `src/` must run the benchmark suite
+  (`RUNS=10 RGX=target/release/rgx benches/bench.sh <repo> <pat>...` over the
+  [`baseline.txt`](benches/baseline.txt) repos/patterns) and include a one-line summary in the commit
+  message — verdict, speedup range, and the machine load it ran at, e.g.
+  `bench: all OK, 3-117x vs rg (load ~2.1)`. Speed is half the product's promise; a silent regression
+  is as much a bug as a wrong result. Every query must stay `OK` (rgx at least as fast as rg). Note
+  absolute ms are load-sensitive — the stable signals are the verdict and the speedup ratio, not the
+  raw numbers; refresh `baseline.txt` only from a low-load run.
 
 ## Testing
 
