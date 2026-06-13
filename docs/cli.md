@@ -12,8 +12,9 @@ rgx <pattern> [rg flags...]
 
 - The positional is the pattern; the supported ripgrep flags (see [the flag surface](#the-flag-surface))
   are accepted and behave identically.
-- The index picks candidate files, ripgrep confirms — output is byte-for-byte `rg`'s
-  `path:line:text`.
+- The index picks candidate files, ripgrep confirms — output is byte-for-byte `rg`'s: paths relative
+  to the search argument, line numbers per `rg` (on for a TTY, off when piped; `-n`/`-N` to force), and
+  a single named file prints with no path prefix.
 - Patterns the index can't accelerate fall back to a normal scan transparently.
 
 ```sh
@@ -52,7 +53,7 @@ rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>
 rgx adds exactly **four** modes, recognized only as the **leading token** (any other position goes
 straight to ripgrep). Two are search modes (`--compact`, `--find`); `--server` and `--agent` gate the
 daemon and AI-agent surfaces — see [`design.md`](design.md) for the rationale. The ripgrep flags rgx
-passes through (anywhere, like rg): `-i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob
+passes through (anywhere, like rg): `-i -s -w -n -N -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob
 -t/--type -T/--type-not --hidden --no-ignore`, plus ripgrep's `--sort`/`--sortr` and rgx's own
 `--weights` (for `--sort=weight`; see [Ordering](#ordering--sort--sortr)).
 

@@ -218,7 +218,13 @@ pub fn collect_search_sorted(
     weights: Option<&str>,
 ) -> Result<Vec<u8>> {
     let ranking = rank::parse(pattern, weights, opts)?;
-    let raw = collect_search(root, &ranking.plain, opts, filter)?;
+    // Always collect WITH line numbers so `parse_rows` can key on `(path, lineno)`; whether the line
+    // number is *printed* below follows `opts.line_number` (the bare path's `-n`/`-N`/TTY decision).
+    let canonical = SearchOptions {
+        line_number: true,
+        ..opts
+    };
+    let raw = collect_search(root, &ranking.plain, canonical, filter)?;
     let text = String::from_utf8_lossy(&raw);
     let rows = compact::parse_rows(&text);
     let order = compact::file_order_map(&rows, sort, ranking.ranker.as_ref(), Some(root));
@@ -237,7 +243,12 @@ pub fn collect_search_sorted(
     for &i in &idx {
         let r = &rows[i];
         let sep = if r.is_match { ':' } else { '-' };
-        out.extend_from_slice(format!("{}{sep}{}{sep}{}\n", r.path, r.lineno, r.text).as_bytes());
+        let line = if opts.line_number {
+            format!("{}{sep}{}{sep}{}\n", r.path, r.lineno, r.text)
+        } else {
+            format!("{}{sep}{}\n", r.path, r.text)
+        };
+        out.extend_from_slice(line.as_bytes());
     }
     Ok(out)
 }
@@ -254,7 +265,7 @@ pub fn stream_file_search(
     emit: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let effective = effective_pattern(pattern, opts);
-    confirm::search_streaming(&effective, &[Path::new(file)], Path::new(""), opts, emit)
+    confirm::search_file_streaming(&effective, Path::new(file), opts, emit)
 }
 
 /// Buffered form of [`stream_file_search`], for the compact/paged view.
@@ -282,17 +293,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_file_search_prints_path_as_given() {
+    fn single_file_search_omits_path_like_rg() {
         let tmp = std::env::temp_dir().join(format!("rgx_file_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let p = tmp.join("only.txt");
         std::fs::write(&p, b"alpha\nNEEDLE here\ngamma\n").unwrap();
-
         let given = p.to_str().unwrap();
+
+        // Like `rg <pattern> <file>`: no path prefix. Line numbers follow opts (default on here).
         let out = collect_file_search(given, "NEEDLE", SearchOptions::default()).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert_eq!(text, format!("{given}:2:NEEDLE here\n"));
+        assert_eq!(String::from_utf8(out).unwrap(), "2:NEEDLE here\n");
+
+        // With line numbers off (piped `rg`, no -n): bare text only.
+        let no_ln = SearchOptions {
+            line_number: false,
+            ..SearchOptions::default()
+        };
+        let out = collect_file_search(given, "NEEDLE", no_ln).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "NEEDLE here\n");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -36,11 +36,12 @@ rgx --hidden --no-ignore p  # also search hidden + ignored files
 rgx --sortr=modified TODO   # order results (like rg --sort); see below
 ```
 
-- Output is exactly `rg`'s `path:line:text`. Flags: `-i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n>
-  -C<n> -g/--glob -t/--type -T/--type-not --hidden --no-ignore --` (line numbers always on, so `-n` is
-  a no-op). To search flag-like text: `rgx -- --foo` or `rgx -e --foo`. `-g`/`-t`/`-T` narrow the
-  search (still index-accelerated); `-v`/`--hidden`/`--no-ignore` scan in-process (same output, no
-  index speedup).
+- Output is exactly `rg`'s: `path:line:text`, paths relative to the search argument, line numbers per
+  `rg` (on for a TTY, off when piped; force with `-n`, suppress with `-N`), and a single named file
+  prints with no path prefix. Flags: `-i -s -w -n -N -F -U -v -o -e/--regexp -A<n> -B<n> -C<n>
+  -g/--glob -t/--type -T/--type-not --hidden --no-ignore --`. To search flag-like text: `rgx -- --foo`
+  or `rgx -e --foo`. `-g`/`-t`/`-T` narrow the search (still index-accelerated); `-v`/`--hidden`/
+  `--no-ignore` scan in-process (same output, no index speedup).
 - **Order results** with `--sort=KEY` / `--sortr=KEY` (ripgrep's flags), `KEY` = `path` | `modified` |
   `accessed` | `created` | `weight`. `weight` is a relevance order: add `--weights=label:weight,...`
   and tag regex alternation branches with `<label>` — e.g.

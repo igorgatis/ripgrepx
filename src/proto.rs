@@ -40,8 +40,8 @@ pub enum Request {
     CursorTake { token: String },
 }
 
-/// Pack the boolean flags into a `u16` (bits 0-8 used; bit 8 = `only_matching`). 7 bits of headroom
-/// remain before the next widening.
+/// Pack the boolean flags into a `u16` (bits 0-9 used; bit 8 = `only_matching`, bit 9 = `line_number`).
+/// 6 bits of headroom remain before the next widening.
 pub(crate) fn pack_opts(o: &SearchOptions) -> u16 {
     (o.case_insensitive as u16)
         | ((o.multi_line as u16) << 1)
@@ -52,6 +52,7 @@ pub(crate) fn pack_opts(o: &SearchOptions) -> u16 {
         | ((o.hidden as u16) << 6)
         | ((o.no_ignore as u16) << 7)
         | ((o.only_matching as u16) << 8)
+        | ((o.line_number as u16) << 9)
 }
 
 pub(crate) fn unpack_opts(b: u16, before: u32, after: u32) -> SearchOptions {
@@ -65,6 +66,7 @@ pub(crate) fn unpack_opts(b: u16, before: u32, after: u32) -> SearchOptions {
         hidden: b & 64 != 0,
         no_ignore: b & 128 != 0,
         only_matching: b & 256 != 0,
+        line_number: b & 512 != 0,
         before_context: before as usize,
         after_context: after as usize,
     }

@@ -149,8 +149,8 @@ lines within a file keep ripgrep's order, and `--sortr` reverses only the file o
 The order is a deterministic total order — `(order_value, path, lineno)` — so the keyset cursor stays
 stable across pages. Ordering works on the **bare** output (buffered like `rg --sort`, which also drops
 to single-threaded to sort) and in the `--compact`/MCP view; absence of `--sort` keeps the streaming,
-historical-order path untouched. rgx orders files exactly as `rg --sort` does; the line format is
-rgx's usual one (always-on line numbers, root-relative paths).
+historical-order path untouched. rgx orders files exactly as `rg --sort` does, and the bare line
+format matches `rg` (line numbers per `-n`/`-N`/TTY, paths printed relative to the search argument).
 
 ### Weighted match (`--sort=weight --weights=…`)
 

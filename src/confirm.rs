@@ -18,7 +18,7 @@ use termcolor::NoColor;
 
 /// User-facing search options (the subset of ripgrep flags rgx threads through so far). These
 /// travel over the daemon protocol and drive both query extraction and the confirm step.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SearchOptions {
     pub case_insensitive: bool,
     pub multi_line: bool,
@@ -35,10 +35,33 @@ pub struct SearchOptions {
     pub no_ignore: bool,
     /// `-o`/`--only-matching`: print only the matched part of each line (one line per match).
     pub only_matching: bool,
+    /// Whether to print the `line:` number in `path:line:text` (ripgrep's `-n`/`-N`). Defaults to
+    /// `true`: the compact/MCP view and the keyset parser require it, so only the bare CLI lowers it
+    /// (off when piped, on for a TTY, per `rg`). The daemon honors whatever the request carries.
+    pub line_number: bool,
     /// `-B` / `-C`: lines of leading context.
     pub before_context: usize,
     /// `-A` / `-C`: lines of trailing context.
     pub after_context: usize,
+}
+
+impl Default for SearchOptions {
+    fn default() -> Self {
+        SearchOptions {
+            case_insensitive: false,
+            multi_line: false,
+            dot_matches_new_line: false,
+            word: false,
+            fixed_strings: false,
+            invert: false,
+            hidden: false,
+            no_ignore: false,
+            only_matching: false,
+            line_number: true,
+            before_context: 0,
+            after_context: 0,
+        }
+    }
 }
 
 /// Files searched per parallel batch; bounds peak memory and lets results stream out for huge
@@ -56,7 +79,7 @@ pub(crate) fn build_matcher(pattern: &str, opts: SearchOptions) -> Result<RegexM
 
 fn build_searcher(opts: SearchOptions) -> Searcher {
     SearcherBuilder::new()
-        .line_number(true)
+        .line_number(opts.line_number)
         .binary_detection(BinaryDetection::quit(0))
         .multi_line(opts.multi_line)
         .invert_match(opts.invert)
@@ -80,14 +103,43 @@ fn search_one(
     path: &Path,
     root: &Path,
     only_matching: bool,
+    show_path: bool,
     buf: &mut Vec<u8>,
 ) {
     buf.clear();
     let mut printer = StandardBuilder::new()
         .only_matching(only_matching)
         .build(NoColor::new(&mut *buf));
-    let shown = display_path(path, root);
-    let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
+    if show_path {
+        let shown = display_path(path, root);
+        let _ = searcher.search_path(matcher, path, printer.sink_with_path(matcher, shown));
+    } else {
+        // A single explicitly-named file: `rg` prints no path prefix, just `line:text` (or `text`).
+        let _ = searcher.search_path(matcher, path, printer.sink(matcher));
+    }
+}
+
+/// Search a single explicitly-named file, emitting `[line:]text` with no path prefix — exactly how
+/// `rg <pattern> <file>` renders one named file. `line:` is included per `opts.line_number`.
+pub fn search_file_streaming(
+    pattern: &str,
+    file: &Path,
+    opts: SearchOptions,
+    mut emit: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let matcher = build_matcher(pattern, opts)?;
+    let mut searcher = build_searcher(opts);
+    let mut buf = Vec::new();
+    search_one(
+        &mut searcher,
+        &matcher,
+        file,
+        Path::new(""),
+        opts.only_matching,
+        false,
+        &mut buf,
+    );
+    emit(&buf)
 }
 
 /// Search a known `paths` set for `pattern` (already made effective — escaped for `-F` by the
@@ -108,7 +160,15 @@ pub fn search_streaming(
             .map_init(
                 || (build_searcher(opts), Vec::new()),
                 |(searcher, buf), path| {
-                    search_one(searcher, &matcher, path, root, opts.only_matching, buf);
+                    search_one(
+                        searcher,
+                        &matcher,
+                        path,
+                        root,
+                        opts.only_matching,
+                        true,
+                        buf,
+                    );
                     std::mem::take(buf)
                 },
             )

@@ -19,8 +19,8 @@ const KIND: u8 = 0x01;
 // Bump on any wire-shape change so a cross-version binary cleanly rejects a cursor it would otherwise
 // misread. 0x03: opts byte grew 5 -> 8 flag bits (invert/hidden/no_ignore). 0x04: added the
 // `-g`/`-t`/`-T` filter lists. 0x05: packed opts widened to u16 (`only_matching`) + per-line match
-// ordinal in the keyset.
-const VERSION: u8 = 0x04;
+// ordinal in the keyset. 0x06: added the `line_number` opts bit.
+const VERSION: u8 = 0x06;
 
 /// The compact output shape a cursor paginates over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

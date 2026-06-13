@@ -4,10 +4,10 @@
 //!
 //! Flags are recognized only as the leading token (rgx adds as few as possible to rg's surface).
 //! The rg flag passthrough is a deliberate subset for now (-i, -s, -w, -F, -U, -v, -o, -e/--regexp,
-//! -A/-B/-C, -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, and `--sort`/`--sortr`);
+//! -n/-N, -A/-B/-C, -g/--glob, -t/--type, -T/--type-not, --hidden, --no-ignore, `--`, `--sort`/`--sortr`);
 //! `--weights` is rgx's own (feeds `--sort=weight`).
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -65,7 +65,7 @@ fn usage() {
          rgx --find <name|path> [path] [--after PATH]   find files/dirs by name\n  \
          rgx --server [start|stop|restart|status|watch]\n  \
          rgx --agent [mcp|skill|install|uninstall|list]\n\n\
-         flags: -i -s -w -n -F -U -v -o -e<pat> -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
+         flags: -i -s -w -n -N -F -U -v -o -e<pat> -A<n> -B<n> -C<n> -g<glob> -t<type> -T<type> --hidden --no-ignore --sort=KEY --\n\
          run `rgx --help` for the full guide (drop-in use, server, agent: MCP/skill)"
     );
 }
@@ -83,8 +83,9 @@ rgx — Instant ripgrep for codebases you search over and over.
   rgx --agent [mcp|skill|install|uninstall|list]   AI-agent integration     (rgx --agent --help)
   rgx --version                                    print the rgx version (also -V)
 
-DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output. Flags
-(anywhere, like rg): -i -s -w -n -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob -t/--type
+DROP-IN FOR ripgrep — `rgx <pattern>` takes the same command line as `rg`, same output (line numbers
+on for a TTY / off when piped, `-n`/`-N` to force; a single named file prints with no path prefix).
+Flags (anywhere, like rg): -i -s -w -n -N -F -U -v -o -e/--regexp -A<n> -B<n> -C<n> -g/--glob -t/--type
 -T/--type-not --hidden --no-ignore --. rgx's own modes are recognized only as the first token.
 Examples:
     rgx 'fn \\w+_total' src/    rgx -t rust TODO    rgx -e foo -e bar    rgx -e --server (literal)
@@ -411,11 +412,15 @@ struct ParsedSearch<'a> {
     patterns: Vec<&'a str>,
     mode: Mode,
     positionals: Vec<&'a str>,
+    /// `-n`/`--line-number` => `Some(true)`, `-N`/`--no-line-number` => `Some(false)`, unset => `None`
+    /// (the bare path then defaults to "on for a TTY", like `rg`). Compact/MCP ignore it (always on).
+    line_number: Option<bool>,
 }
 
 fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a>, ExitCode> {
     let mut opts = SearchOptions::default();
     let mut positionals: Vec<&str> = Vec::new();
+    let mut line_number: Option<bool> = None;
     let mut cursor: Option<&str> = None;
     let mut page_size: Option<usize> = None;
     let mut sort = SortSpec::default();
@@ -446,7 +451,8 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
             "-o" | "--only-matching" => opts.only_matching = true,
             "--hidden" => opts.hidden = true,
             "--no-ignore" => opts.no_ignore = true,
-            "-n" | "--line-number" => {}
+            "-n" | "--line-number" => line_number = Some(true),
+            "-N" | "--no-line-number" => line_number = Some(false),
             "-l" | "--files-with-matches" if compact => mode = Mode::Files,
             "-c" | "--count" if compact => mode = Mode::Count,
             p if compact && (p == "--cursor" || p.starts_with("--cursor=")) => {
@@ -560,6 +566,7 @@ fn parse_search<'a>(args: &'a [String], compact: bool) -> Result<ParsedSearch<'a
         patterns,
         mode,
         positionals,
+        line_number,
     })
 }
 
@@ -687,10 +694,15 @@ fn content_cmd(args: &[String]) -> ExitCode {
     if let Err(code) = check_sort(parsed.sort, parsed.weights, parsed.opts.fixed_strings) {
         return code;
     }
-    let (pattern, opts, paths) = match resolve_pattern(&parsed) {
+    let (pattern, mut opts, paths) = match resolve_pattern(&parsed) {
         Ok(t) => t,
         Err(code) => return code,
     };
+    // Line numbers like `rg`: explicit `-n`/`-N` wins, else on for a TTY and off when piped. (The
+    // compact/MCP view and keyset ignore this and always carry line numbers internally.)
+    opts.line_number = parsed
+        .line_number
+        .unwrap_or_else(|| std::io::stdout().is_terminal());
     let path = paths.first().copied();
     // An explicitly named file is searched directly, like `rg <pattern> <file>` — no walk, no daemon,
     // and `--sort` is moot over a single file (file-level ordering is identity). Must precede
@@ -715,6 +727,9 @@ fn content_cmd(args: &[String]) -> ExitCode {
     if let Err(code) = check_filter(&parsed.filter, &root) {
         return code;
     }
+    // `rg`-faithful paths: the daemon/scan render relative to the search root, so prepend the path
+    // argument exactly as typed (`rgx pat sub/` -> `sub/a.txt`, like `rg`). Empty for a cwd search.
+    let prefix = scope_prefix(path);
 
     // `--sort`/`--sortr`: reorder results, the way `rg --sort` does. Reordering requires seeing the
     // whole result set, so it leaves the streaming fast path and buffers (still single command, no
@@ -729,7 +744,8 @@ fn content_cmd(args: &[String]) -> ExitCode {
             parsed.weights,
         ) {
             Ok(bytes) => {
-                match std::io::stdout().write_all(&bytes) {
+                let mut w = PrefixWriter::new(std::io::stdout(), &prefix);
+                match w.write_all(&bytes).and_then(|()| w.flush()) {
                     Ok(()) if bytes.is_empty() => ExitCode::from(1),
                     Ok(()) => ExitCode::SUCCESS,
                     // `rgx --sortr=modified | head`: a closed pipe is a clean exit.
@@ -747,8 +763,6 @@ fn content_cmd(args: &[String]) -> ExitCode {
         };
     }
 
-    let mut stdout = std::io::stdout();
-
     // Fallback queries (no usable trigram) make every file a candidate, so the daemon can't narrow
     // anything and shipping a potentially huge result set back over the socket would be slower than
     // ripgrep. Scan in-process instead: a pipelined parallel walk+search streamed straight to stdout,
@@ -759,7 +773,10 @@ fn content_cmd(args: &[String]) -> ExitCode {
         use std::sync::atomic::{AtomicU64, Ordering};
         // Block-buffered (not the default line-buffered Stdout) so a match-everything query doesn't
         // flush once per line; the mutex serializes the parallel walk threads' writes.
-        let out = Mutex::new(BufWriter::with_capacity(64 * 1024, std::io::stdout()));
+        let out = Mutex::new(PrefixWriter::new(
+            BufWriter::with_capacity(64 * 1024, std::io::stdout()),
+            &prefix,
+        ));
         let bytes = AtomicU64::new(0);
         let res = rgx::stream_full_scan(&root, &pattern, opts, &parsed.filter, |c| {
             bytes.fetch_add(c.len() as u64, Ordering::Relaxed);
@@ -783,7 +800,10 @@ fn content_cmd(args: &[String]) -> ExitCode {
         pattern,
         filter: parsed.filter,
     };
-    match client::request_stream(&root, &req, &mut stdout) {
+    let mut w = PrefixWriter::new(std::io::stdout(), &prefix);
+    let result = client::request_stream(&root, &req, &mut w);
+    let _ = w.flush();
+    match result {
         Ok(0) => ExitCode::from(1),
         Ok(_) => ExitCode::SUCCESS,
         // A closed stdout (e.g. `rgx pat | head`) is a clean exit for a grep-like tool, not an error.
@@ -836,6 +856,7 @@ fn compact_cmd(args: &[String]) -> ExitCode {
             || !parsed.filter.is_empty()
             || !parsed.patterns.is_empty()
             || parsed.mode != Mode::Matches
+            || parsed.line_number.is_some()
             || parsed.opts != SearchOptions::default();
         if !parsed.positionals.is_empty() || stray_flags {
             eprintln!("rgx: --cursor is self-contained; don't combine it with a pattern or flags");
@@ -1001,6 +1022,74 @@ fn shell_quote(s: &str) -> String {
 /// indexed path). One place so the file-vs-directory rule can't drift between the search surfaces.
 fn file_scope(path: Option<&str>) -> Option<&str> {
     path.filter(|p| std::path::Path::new(p).is_file())
+}
+
+/// The display prefix to prepend to each printed path so a scoped search prints `rg`-faithful paths:
+/// `rgx pat sub/` -> `sub/a.txt` (the daemon/scan render relative to the search root, which equals the
+/// argument). Empty when no path argument was given (the search is the cwd, already correct).
+fn scope_prefix(path: Option<&str>) -> String {
+    match path {
+        None => String::new(),
+        Some(p) if p.ends_with('/') => p.to_string(),
+        Some(p) => format!("{p}/"),
+    }
+}
+
+/// Wraps a writer to prepend `prefix` to the start of every output line, except `rg`'s bare `--`
+/// context separator. Buffers the current line so it works regardless of how writes are chunked; an
+/// empty prefix is a zero-overhead passthrough. Callers must `flush()` to emit a trailing unterminated
+/// line (confirm output always ends in `\n`, so in practice the buffer is empty by then).
+struct PrefixWriter<W: Write> {
+    inner: W,
+    prefix: Vec<u8>,
+    line: Vec<u8>,
+}
+
+impl<W: Write> PrefixWriter<W> {
+    fn new(inner: W, prefix: &str) -> Self {
+        PrefixWriter {
+            inner,
+            prefix: prefix.as_bytes().to_vec(),
+            line: Vec::new(),
+        }
+    }
+
+    /// Write the buffered line, prefixed unless it is `rg`'s bare `--` separator. `newline` adds the
+    /// terminator (false only for a trailing line that had none).
+    fn emit_line(&mut self, newline: bool) -> std::io::Result<()> {
+        if self.line != b"--" {
+            self.inner.write_all(&self.prefix)?;
+        }
+        self.inner.write_all(&self.line)?;
+        if newline {
+            self.inner.write_all(b"\n")?;
+        }
+        self.line.clear();
+        Ok(())
+    }
+}
+
+impl<W: Write> Write for PrefixWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.prefix.is_empty() {
+            return self.inner.write(buf);
+        }
+        for &b in buf {
+            if b == b'\n' {
+                self.emit_line(true)?;
+            } else {
+                self.line.push(b);
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if !self.line.is_empty() {
+            self.emit_line(false)?;
+        }
+        self.inner.flush()
+    }
 }
 
 /// Stream a single explicitly-named file's matches to stdout (the `rgx <pattern> <file>` path). Exit
