@@ -95,19 +95,6 @@ rgx --compact -l 'fn .*Handler'              # matching files only;  -c for per-
 rgx --sortr=modified 'fn .*Handler'          # order results (like rg --sort); works bare too
 ```
 
-### Ordering (`--sort` / `--sortr`)
-
-`--sort=KEY` / `--sortr=KEY` reorder results — ripgrep's own flags and vocabulary (`path`, `modified`,
-`accessed`, `created`), plus rgx's `weight` for **relevance**: tag regex alternation branches with
-`<label>`, weight them with `--weights`, and files matching higher-weighted branches float to the top.
-The `<label>` tags are stripped before searching, so the match set stays exactly `rg`'s — reordering
-only, nothing dropped. Works on the bare search (like `rg --sort`) and in `--compact`/MCP (where the
-order holds across pages).
-
-```sh
-rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
-```
-
 ```
 [matches 1-50 of 142 in 18 files]
 src/server.rs
@@ -123,6 +110,19 @@ is flagged with a `note:` line. The token you echo back is a short id: the daemo
 a couple of minutes and hands you the id in its place. It's single-use; if it expires (or the daemon
 was stopped) you get `pagination expired — re-run the search`.
 
+### Ordering (`--sort` / `--sortr`)
+
+`--sort=KEY` / `--sortr=KEY` reorder results — ripgrep's own flags and vocabulary (`path`, `modified`,
+`accessed`, `created`), plus rgx's `weight` for **relevance**: tag regex alternation branches with
+`<label>`, weight them with `--weights`, and files matching higher-weighted branches float to the top.
+The `<label>` tags are stripped before searching, so the match set stays exactly `rg`'s — reordering
+only, nothing dropped. Works on the bare search (like `rg --sort`) and in `--compact`/MCP (where the
+order holds across pages).
+
+```sh
+rgx --sort=weight --weights=impl:0.7,call:0.3 'fn (process<impl>|process\(<call>)'
+```
+
 ### MCP or CLI
 
 - **MCP** — `rgx --agent mcp` exposes `content_search` (returns the `--compact` paged view by
@@ -136,7 +136,7 @@ State (index + daemon socket) lives outside the repo under `$RGX_CACHE_DIR`, els
 `cache_dir`, else `$XDG_CACHE_HOME/rgx`, else `~/.cache/rgx` — a rebuildable cache, safe to delete,
 never written into the indexed tree.
 
-### Config
+## Config
 
 Optional TOML at `$RGX_CONFIG`, else `$XDG_CONFIG_HOME/rgx/config.toml`, else
 `~/.config/rgx/config.toml`. A missing file is fine; a malformed or invalid one is an error.
